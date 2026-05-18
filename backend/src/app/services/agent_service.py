@@ -5,7 +5,6 @@ from typing import Any
 import uuid, json
 from langchain_core.messages import AIMessage
 
-from app.agent.error_mapper import normalize_agent_exception
 from app.agent.meta import build_capability_response, is_capability_question
 from app.agent.model_factory import resolve_provider_model_name
 from app.agent.runtime import PreparedAgentRuntime, prepare_agent_runtime

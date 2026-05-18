@@ -1,12 +1,8 @@
 from mcp.server.fastmcp import FastMCP
 from rdkit import Chem
 import urllib.parse
-from typing import Any
 import httpx
-import json
-import asyncio
 
-from app.errors.models import AppError, ErrorCode
 
 from app.schemas.schemas import (SearchByNameInput,SearchBySMILESInput,SearchByFormulaInput,SearchByMassRangeArgs
                                  ,SearchByInChIKeyArgs)
@@ -17,10 +13,6 @@ global_sem = asyncio.Semaphore(1)
 mcp = FastMCP("pubchem-tools")
 
 import asyncio
-import httpx
-import urllib.parse
-import json
-from typing import Any
 
 async def _fetch_props(cid: int, client: httpx.AsyncClient) -> dict:
     """Безопасно запрашивает свойства вещества. При ошибке возвращает базовую инфо."""
