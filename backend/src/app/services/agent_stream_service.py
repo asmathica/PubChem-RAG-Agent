@@ -65,70 +65,73 @@ class AgentStreamService:
             )
             return response
         logger.info(f"--- [AgentService] Инициализация рантайма (trace_id: {resolved_trace_id}) ---")
-        runtime = self.runtime_factory(
-            self.settings,
+        async with self.runtime_factory(
+            settings=self.settings,
+            trace_id=resolved_trace_id,
+            mcp_client=self.mcp_client,
             provider=request.provider,
-            trace_id=resolved_trace_id,
-        )
-        logger.debug(f"Рантайм создан для провайдера: {request.provider}")
-        logger.debug("Сборка конфигурации invoke_config...")
+        ) as runtime:
+            logger.debug(f"Рантайм создан для провайдера: {request.provider}")
+            logger.debug("Сборка конфигурации invoke_config...")
 
-        invoke_config = dict(runtime.invoke_config)
-        callbacks = list(invoke_config.get("callbacks", []))
-        if extra_callbacks:
-            logger.info(f"Добавление {len(extra_callbacks)} дополнительных колбэков (например, Langfuse/Tracer)")
-            callbacks.extend(extra_callbacks)
+            invoke_config = dict(runtime.invoke_config)
+            callbacks = list(invoke_config.get("callbacks", []))
+            if extra_callbacks:
+                logger.info(f"Добавление {len(extra_callbacks)} дополнительных колбэков (например, Langfuse/Tracer)")
+                callbacks.extend(extra_callbacks)
 
-        if callbacks:
-            invoke_config["callbacks"] = callbacks
-            logger.debug(f"Итоговое количество активных колбэков: {len(callbacks)}")
+            if callbacks:
+                invoke_config["callbacks"] = callbacks
+                logger.debug(f"Итоговое количество активных колбэков: {len(callbacks)}")
 
-        metadata = dict(invoke_config.get("metadata", {}))
-        if metadata_overrides:
-            logger.info(f"Применение оверрайдов метаданных: {list(metadata_overrides.keys())}")
-            metadata.update(metadata_overrides)
+            metadata = dict(invoke_config.get("metadata", {}))
+            if metadata_overrides:
+                logger.info(f"Применение оверрайдов метаданных: {list(metadata_overrides.keys())}")
+                metadata.update(metadata_overrides)
 
-        logger.info(
-            f"--- [AgentService] Конфигурация готова. Модель: {getattr(runtime, 'model_name', 'default')} ---"
-        )
-        invoke_config["metadata"] = metadata
-
-        try:
-            result = await asyncio.wait_for(
-                runtime.agent.ainvoke(
-                    {"messages": [{"role": "user", "content": request.text}]},
-                    config=invoke_config,
-                ),
-                timeout=max(
-                    self.settings.agent_run_timeout_seconds,
-                    self.settings.llm_request_timeout_seconds,
-                    30.0,
-                ),
+            logger.info(
+                f"--- [AgentService] Конфигурация готова. Модель: {getattr(runtime, 'model_name', 'default')} ---"
             )
-            logger.info(f"Агент подключен")
+            invoke_config["metadata"] = metadata
 
-        except Exception as exc:
-            print(f"Ошибка подключения агента в agent_stream_service: {exc}")
-            raise normalize_agent_exception(exc) from exc
-        
-        finally:
-            runtime.tracing.flush()
-            await runtime.stop()
-#финальный ответ
-        tool_trace = [
-            AgentToolTraceEntry(
-                step=event.step,
-                tool_name=event.tool_name,
-                arguments=event.arguments,
-                result=event.result,
-                error_message=event.error_message,
+            try:
+                result = await asyncio.wait_for(
+                    runtime.agent.ainvoke(
+                        {"messages": [{"role": "user", "content": request.text}]},
+                        config=invoke_config,
+                    ),
+                    timeout=max(
+                        self.settings.agent_run_timeout_seconds,
+                        self.settings.llm_request_timeout_seconds,
+                        30.0,
+                    ),
+                )
+                logger.info(f"Агент подключен")
+
+            except Exception as exc:
+                logger.error(f"Ошибка подключения агента в agent_stream_service: {exc}", exc_info=True)
+                raise normalize_agent_exception(exc) from exc
+
+            finally:
+                try:
+                    runtime.tracing.flush()
+                except Exception as flush_exc:
+                    logger.warning(f"Langfuse flush failed (non-fatal): {flush_exc}")
+
+            tool_trace = [
+                AgentToolTraceEntry(
+                    step=event.step,
+                    tool_name=event.tool_name,
+                    arguments=event.arguments,
+                    result=event.result,
+                    error_message=event.error_message,
+                )
+                for event in runtime.recorder.events
+            ]
+            return build_agent_response_envelope(
+                trace_id=resolved_trace_id,
+                request=request,
+                runtime=runtime,
+                result=result,
+                tool_trace=tool_trace,
             )
-            for event in runtime.recorder.events
-        ]
-        return build_agent_response_envelope(
-            trace_id=resolved_trace_id,
-            request=request,
-            runtime=runtime,
-            result=result,
-            tool_trace=tool_trace,
-        )

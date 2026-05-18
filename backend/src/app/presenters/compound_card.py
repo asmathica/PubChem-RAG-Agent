@@ -55,11 +55,23 @@ def select_primary_compound(response: AgentResponseEnvelope) -> CompoundOverview
 
     if normalized.matches:
         match = normalized.matches[0]
+        # Pass every enriched field that PubChem returned so the side
+        # panel and CompoundCard can show IUPAC / SMILES / XLogP / TPSA /
+        # complexity / H-bond counts without a second tool call.
         return CompoundOverview(
             cid=match.cid,
             title=match.title,
             molecular_formula=match.molecular_formula,
             molecular_weight=match.molecular_weight,
+            iupac_name=match.iupac_name,
+            canonical_smiles=match.canonical_smiles,
+            inchi_key=match.inchi_key,
+            exact_mass=match.exact_mass,
+            xlogp=match.xlogp,
+            tpsa=match.tpsa,
+            complexity=match.complexity,
+            hbond_donor_count=match.hbond_donor_count,
+            hbond_acceptor_count=match.hbond_acceptor_count,
         )
     return None
 

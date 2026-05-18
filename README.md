@@ -60,9 +60,11 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 
 ## Документация
 
-- [backend/README.md](/Volumes/ADATA%20SC750%20(APFS)/Time%20Management/Проекты/Стажировка%20ТГУ%20(наш%20проект)/backend/README.md)
-- [docs/architecture.md](/Volumes/ADATA%20SC750%20(APFS)/Time%20Management/Проекты/Стажировка%20ТГУ%20(наш%20проект)/docs/architecture.md)
-- [readme-api.md](/Volumes/ADATA%20SC750%20(APFS)/Time%20Management/Проекты/Стажировка%20ТГУ%20(наш%20проект)/readme-api.md)
+- [backend/README.md](backend/README.md)
+- [docs/architecture.md](docs/architecture.md)
+- [docs/llm-providers.md](docs/llm-providers.md) — где брать ключи, лимиты, цепочка failover
+- [infra/README.md](infra/README.md) — локальный Langfuse v3 (tracing)
+- [readme-api.md](readme-api.md)
 
 ## Команда
 

@@ -38,26 +38,35 @@ def is_capability_question(text: str) -> bool:
     return any(marker in normalized for marker in (*_RUSSIAN_MARKERS, *_ENGLISH_MARKERS))
 
 
+_STATIC_TOOL_CATALOG = (
+    ("search_compound_by_name", "Поиск соединения в PubChem по названию или ключевому слову."),
+    ("search_compound_by_smiles", "Поиск по SMILES-структуре."),
+    ("search_compound_by_formula", "Поиск по молекулярной формуле."),
+    ("search_compound_by_inchikey", "Поиск по InChIKey."),
+)
+
+
 def build_capability_response(
     *,
     trace_id: str,
     request_text: str,
     provider: LLMProviderName,
     model_name: str,
-    mcp_tools: list[Any],
+    mcp_tools: list[Any] | None = None,
 ) -> AgentResponseEnvelope:
-    
-    """ """
     is_russian = any("а" <= char <= "я" or char == "ё" for char in request_text.casefold())
 
     header = "У меня есть такие инструменты через MCP:" if is_russian else "I have these MCP tools:"
 
     lines = [header]
 
-    #получаем инструменты от mcp-сервера объектами langchain
-    for tool in mcp_tools:
-        description = tool.description.split('\n')[0] # Берем только первую строку описания
-        lines.append(f"- `{tool.name}` — {description}")
+    if mcp_tools:
+        for tool in mcp_tools:
+            description = (tool.description or "").split('\n')[0]
+            lines.append(f"- `{tool.name}` — {description}")
+    else:
+        for name, description in _STATIC_TOOL_CATALOG:
+            lines.append(f"- `{name}` — {description}")
 
     if is_russian:
         lines.extend(
@@ -114,7 +123,6 @@ def build_capability_response(
 
     return AgentResponseEnvelope(
         trace_id=trace_id,
-        source="langchain-agent",
         status="success",
         raw=None,
         normalized=normalized,

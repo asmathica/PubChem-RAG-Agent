@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import logging
+import socket
 import uuid
 
 from fastapi import FastAPI, Request
@@ -14,6 +16,28 @@ from app.config import get_settings
 from app.container import AppContainer, build_container
 from app.errors.models import AppError, ErrorCode
 from app.errors.normalizer import build_agent_error_response, build_interpret_error_response, build_query_error_response, unknown_error
+
+
+def _silence_otel_when_langfuse_offline(settings) -> None:
+    """If LANGFUSE_BASE_URL points at a port that isn't accepting
+    connections, suppress the per-second OTLP exporter warnings so the
+    real backend logs stay readable. Once the user runs
+    `docker compose -f infra/langfuse-compose.yml up -d` the spans
+    will start flowing again — the loggers are not permanently muted,
+    just dropped to ERROR.
+    """
+    url = settings.langfuse_base_url
+    if not url.startswith("http://localhost") and not url.startswith("http://127.0.0.1"):
+        return  # remote endpoint — leave default warning level
+    try:
+        host = url.split("://", 1)[1].split("/", 1)[0]
+        host, _, port = host.partition(":")
+        port = int(port or 80)
+        with socket.create_connection((host, port), timeout=0.5):
+            pass
+    except OSError:
+        logging.getLogger("opentelemetry.exporter.otlp.proto.http.trace_exporter").setLevel(logging.ERROR)
+        logging.getLogger("opentelemetry.exporter.otlp").setLevel(logging.ERROR)
 
 
 def create_app(container_override: AppContainer | None = None) -> FastAPI:
@@ -35,6 +59,7 @@ def create_app(container_override: AppContainer | None = None) -> FastAPI:
 
     """
     settings = get_settings()
+    _silence_otel_when_langfuse_offline(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -21,6 +21,8 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallLimitMiddleware, wrap_tool_call
 from langchain_core.messages import ToolMessage
+from langchain_mcp_adapters.tools import load_mcp_tools
+from langgraph.types import Command
 
 
 from app.agent.model_factory import build_chat_model
@@ -28,6 +30,81 @@ from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tracing import LangChainTracingConfig, ToolTraceRecorder, build_langchain_tracing_config
 from app.config import Settings
 from app.schemas.agent import LLMProviderName
+
+
+def _build_tool_trace_recorder_middleware(recorder: ToolTraceRecorder) -> Any:
+    """Middleware that writes every MCP tool invocation into the ToolTraceRecorder.
+
+    Sits as the OUTERMOST tool-call middleware so it observes both real handler
+    responses AND short-circuit ToolMessages produced by inner middleware
+    (e.g. duplicate-call guard). Captures call name, arguments, parsed JSON
+    result, and any exception or PubChem-style ``ok=False`` payload.
+    """
+
+    @wrap_tool_call(name="record_tool_invocations")
+    async def record_tool_invocations(request, handler):  # noqa: ANN001
+        tool_name = request.tool_call["name"]
+        arguments = request.tool_call.get("args", {}) or {}
+        recorder.start_call(tool_name)
+        try:
+            response = await handler(request)
+        except Exception as exc:
+            recorder.record(
+                tool_name=tool_name,
+                arguments=arguments,
+                error_message=str(exc),
+            )
+            raise
+
+        if isinstance(response, Command):
+            recorder.record(tool_name=tool_name, arguments=arguments)
+            return response
+
+        result: dict[str, Any] | None = None
+        error_message: str | None = None
+        content = getattr(response, "content", None)
+
+        def _parse_text_payload(text: str) -> dict[str, Any]:
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return {"text": text}
+            return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+        if isinstance(content, str):
+            result = _parse_text_payload(content)
+        elif isinstance(content, dict):
+            result = content
+        elif isinstance(content, list):
+            text_chunks: list[str] = []
+            for chunk in content:
+                if isinstance(chunk, str):
+                    text_chunks.append(chunk)
+                elif isinstance(chunk, dict) and chunk.get("type") == "text":
+                    text_value = chunk.get("text", "")
+                    if isinstance(text_value, str):
+                        text_chunks.append(text_value)
+            joined = "".join(text_chunks)
+            if joined:
+                result = _parse_text_payload(joined)
+
+        if isinstance(result, dict):
+            if getattr(response, "status", None) == "error" or result.get("ok") is False:
+                error_payload = result.get("error") or result.get("message")
+                if isinstance(error_payload, dict):
+                    error_message = error_payload.get("message")
+                elif isinstance(error_payload, str):
+                    error_message = error_payload
+
+        recorder.record(
+            tool_name=tool_name,
+            arguments=arguments,
+            result=result,
+            error_message=error_message,
+        )
+        return response
+
+    return record_tool_invocations
 import logging
 logger = logging.getLogger(__name__)
 
@@ -114,11 +191,12 @@ async def prepare_agent_runtime(
     """
     async with mcp_client.session("pubchem") as session:
 
-      mcp_tools =[]
+      mcp_tools = await load_mcp_tools(session)
       resolved_model = build_chat_model(settings, provider=provider)
       recorder = ToolTraceRecorder()
 
       middleware = [
+        _build_tool_trace_recorder_middleware(recorder),
         _build_duplicate_tool_call_guard(),
         ToolCallLimitMiddleware(run_limit=max(5, settings.agent_max_steps)),
     ]

@@ -1,35 +1,21 @@
+/* Subtle gradient overlay on the chat surface so the dark theme has depth.
+ * Chainlit 2.11 ships its own Tailwind utility classes generated dynamically
+ * (see chainlit/chainlit#1626) — overriding `.cl-*` selectors is unreliable
+ * across releases. We only style what shadcn/Tailwind themes don't reach:
+ * the document body itself.
+ */
 body {
   background:
-    radial-gradient(circle at top, rgba(37, 99, 235, 0.08), transparent 28%),
-    linear-gradient(180deg, hsl(var(--background)) 0%, color-mix(in srgb, hsl(var(--background)) 90%, black) 100%);
+    radial-gradient(circle at top, hsl(var(--primary) / 0.06), transparent 28%),
+    linear-gradient(180deg,
+      hsl(var(--background)) 0%,
+      color-mix(in srgb, hsl(var(--background)) 92%, black) 100%);
   color: hsl(var(--foreground));
+  font-family: var(--font-sans);
 }
 
-.cl-chat-container,
-.cl-container,
-.cl-main {
-  background: transparent !important;
-}
-
-.cl-message,
-.cl-step,
-.cl-card {
-  border: 1px solid hsl(var(--border));
-  box-shadow: 0 12px 40px rgba(2, 8, 23, 0.18);
-  border-radius: 1rem;
-}
-
-textarea,
-input,
-[contenteditable="true"] {
-  background: hsl(var(--secondary)) !important;
-  border-color: hsl(var(--border)) !important;
-}
-
-.cl-step[data-status="running"] {
-  border-color: hsl(var(--primary));
-}
-
-.cl-step .cl-step-name {
-  font-weight: 600;
+/* Make the textarea selection match the primary accent. */
+::selection {
+  background: hsl(var(--primary) / 0.32);
+  color: hsl(var(--foreground));
 }

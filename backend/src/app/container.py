@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.agent.mcp_client import MultiServerMCPClient
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from app.adapter.pubchem_adapter import PubChemAdapter
 
 from app.agent.tracing import build_langfuse_client_from_settings
@@ -36,10 +36,7 @@ class AppContainer:
                 client.flush()
             except Exception:
                 pass
-        
 
-        await self.transport.close()
-#   
         try:
             await self.transport.close()
             logging.info("PubChem transport closed.")
@@ -71,7 +68,7 @@ def build_container(settings: Settings | None = None) -> AppContainer:
     server_config = {
         "pubchem": {
             "command": "python",
-            "args": ["-m", "app.agent.msp_server"],
+            "args": ["-m", "app.agent.mcp_server"],
             "transport": "stdio",
      }
     }

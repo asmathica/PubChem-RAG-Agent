@@ -36,7 +36,32 @@ def _get_session_id() -> str:
     return cast(str, session_id)
 
 
+def _humanize_runtime_error(exc: BaseException) -> str:
+    """Map noisy upstream / framework exceptions into a single short Russian
+    sentence the chat user can act on, instead of the generic
+    'Не удалось завершить запрос из-за внутренней ошибки приложения.'
+    """
+    text = repr(exc)
+    if "RESOURCE_EXHAUSTED" in text or "429" in text:
+        return "Лимит запросов к LLM временно исчерпан — подождите минуту и повторите."
+    if "GraphRecursionError" in text or "Recursion limit" in text:
+        return "Агент сделал слишком много шагов. Сформулируйте запрос более конкретно или повторите."
+    if "ServerError" in text or "500 INTERNAL" in text or "503" in text or "INTERNAL" in text:
+        return "Языковая модель временно недоступна (5xx у провайдера). Попробуйте ещё раз через несколько секунд."
+    if "TimeoutError" in text or "Timeout" in text:
+        return "Запрос занял слишком много времени. Сократите формулировку или попробуйте позже."
+    return "Не удалось завершить запрос — попробуйте ещё раз. Если проблема повторится, проверьте логи бэкенда."
+
+
 def _build_details_markdown(response: AgentResponseEnvelope) -> str:
+    """Markdown for the right side panel.
+
+    The MCP search tools only return cid / title / formula / molecular_weight
+    today, so the rich-field block (IUPAC, SMILES, XLogP…) is almost always
+    empty. Without a fallback the panel ends up as a lonely "### Подробности"
+    header. Always emit the basics that ARE available, plus the trace and a
+    direct PubChem link, so the user has something useful to look at.
+    """
     normalized = response.normalized
     if normalized is None:
         return "Подробные сведения недоступны."
@@ -45,26 +70,44 @@ def _build_details_markdown(response: AgentResponseEnvelope) -> str:
     if primary is None:
         return build_tool_trace_markdown(response)
 
-    lines = ["### Подробности"]
+    lines: list[str] = [f"### {primary.title or f'CID {primary.cid}'}"]
+
+    basics: list[str] = []
+    basics.append(f"- **PubChem CID:** {primary.cid}")
+    if primary.molecular_formula:
+        basics.append(f"- **Молекулярная формула:** `{primary.molecular_formula}`")
+    if primary.molecular_weight is not None:
+        basics.append(f"- **Молекулярная масса:** {primary.molecular_weight:.2f} г/моль")
     if primary.iupac_name:
-        lines.append(f"- IUPAC: {primary.iupac_name}")
+        basics.append(f"- **IUPAC:** {primary.iupac_name}")
     if primary.canonical_smiles:
-        lines.append(f"- Canonical SMILES: `{primary.canonical_smiles}`")
+        basics.append(f"- **Canonical SMILES:** `{primary.canonical_smiles}`")
     if primary.exact_mass is not None:
-        lines.append(f"- Exact mass: {primary.exact_mass:.4f}")
+        basics.append(f"- **Exact mass:** {primary.exact_mass:.4f}")
     if primary.xlogp is not None:
-        lines.append(f"- XLogP: {primary.xlogp}")
+        basics.append(f"- **XLogP:** {primary.xlogp}")
     if primary.tpsa is not None:
-        lines.append(f"- TPSA: {primary.tpsa}")
+        basics.append(f"- **TPSA:** {primary.tpsa}")
     if primary.complexity is not None:
-        lines.append(f"- Complexity: {primary.complexity}")
+        basics.append(f"- **Complexity:** {primary.complexity}")
     if primary.hbond_donor_count is not None or primary.hbond_acceptor_count is not None:
         donor = primary.hbond_donor_count if primary.hbond_donor_count is not None else "—"
         acceptor = primary.hbond_acceptor_count if primary.hbond_acceptor_count is not None else "—"
-        lines.append(f"- H-bond donors / acceptors: {donor} / {acceptor}")
+        basics.append(f"- **H-bond донор/акцептор:** {donor} / {acceptor}")
+    lines.extend(basics)
+
+    lines.append("")
+    lines.append(f"[Открыть на PubChem ↗](https://pubchem.ncbi.nlm.nih.gov/compound/{primary.cid})")
+
     if primary.description:
         lines.append("")
+        lines.append("#### Описание")
         lines.append(primary.description)
+
+    if normalized.tool_trace:
+        lines.append("")
+        lines.append(build_tool_trace_markdown(response))
+
     return "\n".join(lines)
 
 
@@ -177,11 +220,9 @@ async def on_message(message: cl.Message) -> None:
     except AppError as error:
         await cl.Message(content=error.message, author="PubChem Agent").send()
         return
-    except Exception:
-        await cl.Message(
-            content="Не удалось завершить запрос из-за внутренней ошибки приложения.",
-            author="PubChem Agent",
-        ).send()
+    except Exception as exc:
+        message = _humanize_runtime_error(exc)
+        await cl.Message(content=message, author="PubChem Agent").send()
         return
 
     normalized = response.normalized
@@ -195,12 +236,17 @@ async def on_message(message: cl.Message) -> None:
         step.output = json.dumps(parsed_query_payload, ensure_ascii=False, indent=2)
 
     primary = select_primary_compound(response)
-    message_elements: list[cl.Element] = []
+    inline_elements: list[cl.Element] = []
+    sidebar_elements: list[cl.Element] = []
     if primary is not None:
         synonyms = extract_primary_synonyms(response, primary.cid)
-        message_elements.append(
+        inline_elements.append(
             cl.CustomElement(
-                name="CompoundCard",
+                # Renamed to V2 so the browser cannot serve the cached old
+                # JSX bundle for /public/elements/CompoundCard.jsx — Chainlit
+                # 2.11 does not version-hash custom-element URLs, so the
+                # only reliable way to bust a stuck client is a new filename.
+                name="CompoundCardV2",
                 props=build_compound_card_props(
                     primary,
                     explanation=normalized.explanation,
@@ -209,16 +255,18 @@ async def on_message(message: cl.Message) -> None:
                 display="inline",
             )
         )
-        message_elements.append(
+        sidebar_elements.append(
             cl.Image(
                 name=f"CID {primary.cid} structure",
                 url=build_structure_image_url(primary.cid),
                 display="side",
             )
         )
-        message_elements.append(
+        sidebar_elements.append(
             cl.Text(
-                name="Подробности вещества",
+                # Renders as the section heading in the side panel — keep
+                # it user-facing Russian instead of the internal "properties".
+                name="Свойства вещества",
                 content=_build_details_markdown(response),
                 display="side",
             )
@@ -229,10 +277,10 @@ async def on_message(message: cl.Message) -> None:
             step.output = build_tool_trace_markdown(response)
 
     if len(normalized.matches) > 1:
-        message_elements.append(
+        sidebar_elements.append(
             cl.Text(
-                name="Другие кандидаты",
-                content=build_candidates_markdown(normalized.matches[1:]),
+                name="candidates",
+                content="### Другие кандидаты\n" + build_candidates_markdown(normalized.matches[1:]),
                 display="side",
             )
         )
@@ -252,8 +300,25 @@ async def on_message(message: cl.Message) -> None:
             normalized.clarification_question or "Агент завершил поиск без дополнительного пояснения."
         )
 
+    # Visibility into what the UI is being told to render — these go to
+    # uvicorn/chainlit stdout so an operator can see exactly which custom
+    # elements and sidebar items left the backend on a given turn.
+    print(
+        f"!!! RENDER inline={[el.__class__.__name__ + ':' + (getattr(el, 'name', '?') or '?') for el in inline_elements]} "
+        f"sidebar={[el.__class__.__name__ + ':' + (getattr(el, 'name', '?') or '?') for el in sidebar_elements]} "
+        f"primary_cid={primary.cid if primary else None}"
+    )
+
     await cl.Message(
         content=f"{normalized.final_answer}{explanation_block}{clarification_block}",
-        elements=message_elements,
+        elements=inline_elements,
         author="PubChem Agent",
     ).send()
+
+    # Push extras to the explicit element sidebar. The elements also keep
+    # display="side" so Chainlit's legacy side-view effect does not clear the
+    # explicit sidebar while it processes the emitted element events.
+    if sidebar_elements:
+        await cl.ElementSidebar.set_title(f"Подробности — {primary.title or 'вещество'}" if primary else "Подробности")
+        await cl.ElementSidebar.set_elements(sidebar_elements, key=trace_id)
+        print(f"!!! SIDEBAR sent {len(sidebar_elements)} elements + title='Подробности — {primary.title if primary else 'вещество'}'")

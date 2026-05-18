@@ -11,7 +11,7 @@ def get_mcp_connections_config(settings: Settings) -> dict[str, dict[str, Any]]:
     return {
         "pubchem": {
             "command": "python", 
-            "args": ["app/mcp/msp_server.py"], 
+            "args": ["app/mcp/mcp_server.py"],
             
             # Переменные окружения, которые нужны серверу (например, URL API или ключи)
             "env": {

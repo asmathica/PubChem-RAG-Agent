@@ -1,0 +1,169 @@
+# Local Langfuse v3 stack with auto-bootstrap of user/org/project/API-keys.
+#
+# Up:    docker compose -f infra/langfuse-compose.yml up -d
+# Logs:  docker compose -f infra/langfuse-compose.yml logs -f langfuse-web
+# Down:  docker compose -f infra/langfuse-compose.yml down -v
+#
+# After the first start (~60s):
+# - UI: http://localhost:3030 (login: dev@example.com / dev-pass-12345)
+# - Public API key: pk-lf-local-dev-public
+# - Secret API key: sk-lf-local-dev-secret
+# - Drop the keys above into backend/.env (LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY)
+#   and set LANGFUSE_BASE_URL=http://localhost:3030, then restart ./scripts/dev.sh.
+#
+# Adapted from upstream https://github.com/langfuse/langfuse/blob/main/docker-compose.yml
+# Differences:
+# - Web UI on host port 3030 (3000 is already used by Chainlit).
+# - LANGFUSE_INIT_* values pre-seed an org/project/user — skip the signup flow.
+# - All non-web services bound to 127.0.0.1.
+# - Single common env block (langfuse-worker-env) reused by web + worker.
+
+services:
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:3
+    container_name: pubchem-langfuse-worker
+    restart: unless-stopped
+    depends_on: &langfuse-depends-on
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse
+      SALT: pubchem-rag-dev-salt
+      ENCRYPTION_KEY: "579a53dd630d0a4ddc26f2ca62136762e30d348997cab6f98b310de1ea69d918"
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_USE_AZURE_BLOB: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: redissecret
+      REDIS_TLS_ENABLED: "false"
+      NEXTAUTH_URL: http://localhost:3030
+
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:3
+    container_name: pubchem-langfuse
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - "127.0.0.1:3030:3000"
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: pubchem-rag-dev-nextauth-secret
+      # Seed an organization + project + user + API keys on first start so the
+      # backend can talk to Langfuse without a manual signup.
+      LANGFUSE_INIT_ORG_ID: pubchem-org
+      LANGFUSE_INIT_ORG_NAME: PubChem RAG Agent
+      LANGFUSE_INIT_PROJECT_ID: pubchem-rag
+      LANGFUSE_INIT_PROJECT_NAME: PubChem RAG
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-local-dev-public
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-local-dev-secret
+      LANGFUSE_INIT_USER_EMAIL: dev@example.com
+      LANGFUSE_INIT_USER_NAME: Dev
+      LANGFUSE_INIT_USER_PASSWORD: dev-pass-12345
+
+  langfuse-clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:24
+    container_name: pubchem-langfuse-clickhouse
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  langfuse-minio:
+    image: docker.io/minio/minio
+    container_name: pubchem-langfuse-minio
+    restart: unless-stopped
+    entrypoint: sh
+    # Pre-create the "langfuse" bucket so worker doesn't need PutBucket creds.
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "127.0.0.1:9090:9000"
+      - "127.0.0.1:9091:9001"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  langfuse-redis:
+    image: docker.io/redis:7
+    container_name: pubchem-langfuse-redis
+    restart: unless-stopped
+    command: --requirepass redissecret
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redissecret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  langfuse-postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: pubchem-langfuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:

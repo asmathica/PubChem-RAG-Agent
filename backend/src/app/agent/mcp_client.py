@@ -24,7 +24,7 @@ async def main():
     client = MultiServerMCPClient({                      
     "pubchem": {
         "command": "python",
-        "args": ["-m", "app.agent.msp_server"], 
+        "args": ["-m", "app.agent.mcp_server"],
         "transport": "stdio",
         "env": {
             **os.environ, 
@@ -35,7 +35,7 @@ async def main():
 })
     print(f"--- Запуск MCP Сервера ---")
     print(f"Корень (PYTHONPATH): {src_path}")
-    print(f"Команда: {sys.executable} -m app.agent.msp_server")
+    print(f"Команда: {sys.executable} -m app.agent.mcp_server")
         
     tools = await client.get_tools()
     #llm = ChatOpenAI(

@@ -26,12 +26,19 @@ from app.schemas.query import QueryRequest
 import logging
 logger = logging.getLogger(__name__)
 MCP_LOOKUP_MAP = {
+<<<<<<< HEAD
     "search_by_name_pubchem": "name",
     "search_by_smiles_pubchem": "smiles",
     "get_by_cid": "cid",
     "search_by_formula_pubchem": "formula",
     "search_compound_by_inchikey": "inchikey",
     "search_similar_mol_pubchem": "smiles_similar"
+=======
+    "search_compound_by_name": "name",
+    "search_compound_by_smiles": "smiles",
+    "search_compound_by_formula": "formula",
+    "search_compound_by_inchikey": "inchikey",
+>>>>>>> main
 }
 
 class AgentService:
@@ -73,9 +80,9 @@ class AgentService:
         
         async with self.runtime_factory(
             settings=self.settings,
-            trace_id=trace_id,
-            mcp_client=self.mcp_client, 
-            provider=request.provider
+            trace_id=resolved_trace_id,
+            mcp_client=self.mcp_client,
+            provider=request.provider,
         ) as runtime:
             logger.info(f"--- [AgentService] Runtime создан: provider {request.provider}, настройки: {self.settings}")
 
@@ -113,7 +120,12 @@ class AgentService:
 
             except asyncio.TimeoutError:
                 logger.error("Агент превысил лимит времени (Timeout)")
-                raise AppError(ErrorCode.TIMEOUT, "Агент слишком долго думал")
+                raise AppError(
+                    ErrorCode.UPSTREAM_TIMEOUT,
+                    "Агент слишком долго думал — попробуйте более конкретный запрос или повторите.",
+                    http_status=504,
+                    retriable=True,
+                )
          
             except Exception as exc:
                 logger.error(f"Ошибка во время выполнения агента: {exc}", exc_info=True)
@@ -218,17 +230,25 @@ def _infer_parsed_query(request_text: str, tool_trace: list[AgentToolTraceEntry]
 
     #генератор
     target_event = next(
-        (e for e in tool_trace if e.tool_name in MCP_LOOKUP_MAP), 
-        None
+        (e for e in tool_trace if e.tool_name in MCP_LOOKUP_MAP),
+        None,
     )
 
     query_obj = None
 
     if target_event:
+        input_mode = MCP_LOOKUP_MAP[target_event.tool_name]
+        # MCP-tools принимают аргумент с именем, совпадающим с input_mode
+        # ("name", "smiles", "formula", "inchikey"), а не "identifier".
+        identifier = (
+            target_event.arguments.get(input_mode)
+            or target_event.arguments.get("identifier")
+            or ""
+        )
         query_obj = QueryRequest(
-            input_mode = MCP_LOOKUP_MAP[target_event.tool_name],
-            identifier = target_event.arguments.get("identifier", ""),
-            limit = target_event.arguments.get("limit", 10)
+            input_mode=input_mode,
+            identifier=identifier,
+            limit=target_event.arguments.get("limit", 10),
         )
 
     return ParsedAgentQuery(
@@ -326,26 +346,6 @@ def _infer_explanation(
         
         explanation.append(msg)
 
-    #анализ использованных тулов
-    executed_tools = {entry.tool_name for entry in tool_trace if not entry.error_message}
-    
-    if "search_compound_by_mass_range" in executed_tools:
-        explanation.append(
-            "Выполнен поиск в диапазоне масс для уточнения параметров." if is_russian 
-            else "Performed a mass range search to refine parameters."
-        )
-
-    if "get_compound_summary" in executed_tools:
-        explanation.append(
-            "Получена детальная сводка характеристик для найденного соединения." if is_russian 
-            else "Fetched a detailed summary for the identified compound."
-        )
-
-    if "search_by_synonym_pubchem" in executed_tools:
-        explanation.append(
-            "Проведен дополнительный поиск по базе синонимов." if is_russian 
-            else "Conducted an additional search in the synonyms database."
-        )
 ###проверка результата
     if primary is not None:
 
@@ -483,42 +483,76 @@ def build_agent_response_envelope(
     trace_id: str,
     request: AgentRequest,
     runtime: PreparedAgentRuntime,
-    result: AgentFinalStructuredResponse,
+    result: dict[str, Any],
     tool_trace: list[AgentToolTraceEntry],
 ) -> AgentResponseEnvelope:
-    """
-    Финальная сборка ответа. 
-    Соединяет параметры запуска, структурированный ответ модели и лог инструментов.
+    """Final response assembly.
+
+    `create_agent(...).ainvoke(...)` returns a LangGraph state dict (messages,
+    structured_response, etc.) — NOT a Pydantic model. We reconstruct the
+    envelope using the helper functions defined above:
+    - final_answer from the last AIMessage; fallback to compound summary
+      when the LLM produced an empty / generic response.
+    - matches/compounds extracted from tool_trace JSON payloads.
+    - parsed_query / explanation / clarification reconstructed from the
+      tool_trace + the original user text.
     """
 
     execution_info = AgentExecutionInfo(
         provider=runtime.provider,
         model=runtime.model_name,
-        text=request.text
+        text=request.text,
     )
 
-    # 2. Формируем нормализованную нагрузку
-  
+    matches, compounds = _collect_compounds(tool_trace)
+
+    final_answer = _fallback_answer(result)
+    if not final_answer or final_answer.startswith("Агент завершил работу"):
+        if matches or compounds:
+            final_answer = _fallback_compound_answer(request.text, matches, compounds)
+
+    parsed_query = _infer_parsed_query(request.text, tool_trace)
+    needs_clarification, clarification_question = _infer_clarification(
+        final_answer, matches, compounds
+    )
+    explanation = _infer_explanation(
+        request.text,
+        parsed_query=parsed_query,
+        matches=matches,
+        compounds=compounds,
+        tool_trace=tool_trace,
+        needs_clarification=needs_clarification,
+    )
+    referenced_cids = _collect_referenced_cids(matches, compounds)
+
     normalized = AgentNormalizedPayload(
         request=execution_info,
-        parsed_query=result.parsed_query,
-        final_answer=result.final_answer,
-        explanation=result.explanation,
-        needs_clarification=result.needs_clarification,
-        clarification_question=result.clarification_question,
-        referenced_cids=result.referenced_cids,
+        parsed_query=parsed_query,
+        final_answer=final_answer,
+        explanation=explanation,
+        needs_clarification=needs_clarification,
+        clarification_question=clarification_question,
+        matches=matches,
+        compounds=compounds,
         tool_trace=tool_trace,
-        # Поля matches и compounds можно оставить пустыми или 
-        # наполнить логикой извлечения из tool_trace в будущем
-        matches=[],
-        compounds=[]
+        referenced_cids=referenced_cids,
     )
 
-    # 3. Собираем и возвращаем Envelope
+    warnings = _build_warnings(normalized)
+
+    raw_payload: dict[str, Any] | None = None
+    if request.include_raw and isinstance(result, dict):
+        messages = result.get("messages", [])
+        raw_payload = {
+            "message_count": len(messages),
+            "tool_call_count": len(tool_trace),
+            "structured_response": result.get("structured_response"),
+        }
+
     return AgentResponseEnvelope(
         trace_id=trace_id,
         status="success",
         normalized=normalized,
-        # raw можно заполнить для отладки, если request.include_raw=True
-        raw=result.model_dump() if request.include_raw else None
+        raw=raw_payload,
+        warnings=warnings,
     )

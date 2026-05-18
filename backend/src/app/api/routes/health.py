@@ -8,7 +8,7 @@ router = APIRouter(tags=["health"])
 async def health(request: Request) -> dict:
     container = request.app.state.container
     mcp_client = container.mcp_client
-    mcp_status = "connected" if mcp_client and mcp_client.is_running else "disconnected"
+    mcp_status = "configured" if mcp_client is not None else "disconnected"
     return {
         "status": "ok",
        "mcp_connection": mcp_status,

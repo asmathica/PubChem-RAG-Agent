@@ -24,7 +24,7 @@ from app.schemas.query import QueryRequest
 
 
 import json
-LLMProviderName = Literal["openai", "modal_glm", "ollama"]
+LLMProviderName = Literal["openai", "modal_glm", "ollama", "gemini", "openrouter", "nvidia", "mistral"]
 
 
 class AgentRequest(BaseModel):
@@ -114,10 +114,6 @@ class AgentNormalizedPayload(BaseModel):
     tool_trace: list[AgentToolTraceEntry] = Field(default_factory=list)
     referenced_cids: list[int] = Field(default_factory=list)
 
-class AgentRequest(BaseModel):
-    text: str = Field(min_length=1, description="Natural-language PubChem request from the user.")
-    provider: LLMProviderName | None = Field(default=None, description="Optional provider override for the agent.")
-    include_raw: bool = Field(default=True, description="Include compact raw debugging payload in the response.")
 
 class AgentResponseEnvelope(BaseModel):
     trace_id: str
