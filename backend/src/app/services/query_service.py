@@ -1,5 +1,5 @@
 import uuid, json
-from app.agent.mcp_client import MultiServerMCPClient
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from app.config import Settings
 from app.errors.models import AppError, ErrorCode
 from app.schemas.common import PresentationHints, WarningMessage, CompoundMatchCard, CompoundOverview
@@ -96,6 +96,7 @@ class QueryService:
 
         if not normalized_matches:#если ничего не найдено по результатам поиска в бд
             _matches = [CompoundMatchCard.model_validate([{ "cid" : 0},
+                                                          {"XLogP": 0},
                                                          { "title" : "Вещество не найдено"},
                                                          { "molecular_formula" : None},
                                                          { "molecular_weight" : None},
@@ -218,6 +219,7 @@ class QueryService:
             "smiles": "search_by_smiles_pubchem",
            # "cid": "get_by_cid",
             "formula": "search_by_formula_pubchem",
-            "inchikey": "search_by_inchikey_pubchem"
+            "inchikey": "search_by_inchikey_pubchem",
+            "smiles_similar": "search_similar_mol_pubchem"
         }
         return mapping.get(mode, "search_by_name_pubchem")

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     app_name: str = "PubChem Compound Explorer API"
     api_version: str = "0.1.0"
     environment: str = "development"
-    base_llm_model: str = "gemma3:4b" 
+    base_llm_model: str = "qwen2.5:7b" 
 
     pubchem_rest_base_url: str = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
     pubchem_view_base_url: str = "https://pubchem.ncbi.nlm.nih.gov/rest/pug_view"
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     heavy_query_concurrency: int = 1
     agent_max_steps: int = 10
 
-    llm_default_provider: str = "mistral"
+    llm_default_provider: str = "ollama"
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4.1-mini"

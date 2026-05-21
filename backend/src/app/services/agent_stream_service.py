@@ -64,7 +64,10 @@ class AgentStreamService:
                 metadata=metadata_overrides,
             )
             return response
+        
+
         logger.info(f"--- [AgentService] Инициализация рантайма (trace_id: {resolved_trace_id}) ---")
+
         async with self.runtime_factory(
             settings=self.settings,
             trace_id=resolved_trace_id,

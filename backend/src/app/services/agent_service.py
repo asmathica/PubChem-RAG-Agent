@@ -5,7 +5,6 @@ from typing import Any
 import uuid, json
 from langchain_core.messages import AIMessage
 
-from app.agent.error_mapper import normalize_agent_exception
 from app.agent.meta import build_capability_response, is_capability_question
 from app.agent.model_factory import resolve_provider_model_name
 from app.agent.runtime import PreparedAgentRuntime, prepare_agent_runtime
@@ -27,10 +26,14 @@ from app.schemas.query import QueryRequest
 import logging
 logger = logging.getLogger(__name__)
 MCP_LOOKUP_MAP = {
-    "search_compound_by_name": "name",
-    "search_compound_by_smiles": "smiles",
-    "search_compound_by_formula": "formula",
+
+    "search_by_name_pubchem": "name",
+    "search_by_smiles_pubchem": "smiles",
+    "get_by_cid": "cid",
+    "search_by_formula_pubchem": "formula",
     "search_compound_by_inchikey": "inchikey",
+    "search_similar_mol_pubchem": "smiles_similar"
+
 }
 
 class AgentService:

@@ -18,7 +18,26 @@ from app.presenters.compound_card import (
     select_primary_compound,
 )
 from app.schemas.agent import AgentRequest, AgentResponseEnvelope
+import httpx
+import logging
 
+logger = logging.getLogger(__name__)
+
+async def check_ollama_availability(base_url: str = "http://localhost:11434") -> bool:
+    """Проверяет, запущена ли Ollama и доступна ли она по сети."""
+    async with httpx.AsyncClient() as client:
+        try:
+            # Делаем быстрый запрос к корню Ollama (таймаут 2 секунды)
+            response = await client.get(base_url, timeout=2.0)
+            if response.status_code == 200 and "Ollama is running" in response.text:
+                logger.info("✅ Успешное подключение к Ollama! Сервис активен.")
+                return True
+            else:
+                logger.warning(f"⚠️ Ollama ответила странным статусом: {response.status_code}")
+                return False
+        except (httpx.ConnectError, httpx.TimeoutException):
+            logger.error(f"❌ Ошибка: Не удалось подключиться к Ollama на {base_url}. Убедись, что приложение Ollama запущено!")
+            return False
 
 def _get_or_create_container() -> AppContainer:
     container = cl.user_session.get("container")
@@ -159,7 +178,12 @@ async def set_starters(
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
+    ollama_ok = await check_ollama_availability("http://localhost:11434")
+    
+    if not ollama_ok:
+        await cl.Message(content="❌ Ошибка: Локальная модель Ollama недоступна. Пожалуйста, запусти приложение Ollama в системе и обнови страницу.").send()
     container = _get_or_create_container()
+
     _get_session_id()
     cl.user_session.set("llm_provider", container.settings.llm_default_provider)
 
