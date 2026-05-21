@@ -26,19 +26,14 @@ from app.schemas.query import QueryRequest
 import logging
 logger = logging.getLogger(__name__)
 MCP_LOOKUP_MAP = {
-<<<<<<< HEAD
+
     "search_by_name_pubchem": "name",
     "search_by_smiles_pubchem": "smiles",
     "get_by_cid": "cid",
     "search_by_formula_pubchem": "formula",
     "search_compound_by_inchikey": "inchikey",
     "search_similar_mol_pubchem": "smiles_similar"
-=======
-    "search_compound_by_name": "name",
-    "search_compound_by_smiles": "smiles",
-    "search_compound_by_formula": "formula",
-    "search_compound_by_inchikey": "inchikey",
->>>>>>> main
+
 }
 
 class AgentService:

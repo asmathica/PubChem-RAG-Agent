@@ -176,7 +176,6 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
     """
     print("!!! ШАГ 1: Входим в build_chat_model")
     print(f"!!! ШАГ 2: Провайдер {provider}")
-   # print(f"DEBUG: API Key exists: {settings.modal_glm_api_key is not None}")
     resolved_provider, model_name = resolve_provider_model_name(settings, provider)
     model_kwargs = {"parallel_tool_calls": False}
 
@@ -204,7 +203,7 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
     if resolved_provider == "ollama":
         ollama_url = settings.ollama_base_url or "http://localhost:11434"
         instance = ChatOllama(
-            model="gemma3:4b",  # например, "gemma3:4b"
+            model=settings.base_llm_model, 
             base_url=ollama_url,
             temperature=0,
             num_predict=1000,
@@ -212,7 +211,7 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
 
         return ResolvedChatModel(
             provider="ollama",
-            model_name="gemma3:4b",
+            model_name=settings.base_llm_model,
             instance=instance.with_config(RunnableConfig(max_concurrency=1))
         )
 

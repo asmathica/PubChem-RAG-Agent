@@ -1,5 +1,5 @@
 import uuid, json
-from app.agent.mcp_client import MultiServerMCPClient
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from app.config import Settings
 from app.errors.models import AppError, ErrorCode
 from app.schemas.common import PresentationHints, WarningMessage, CompoundMatchCard, CompoundOverview
