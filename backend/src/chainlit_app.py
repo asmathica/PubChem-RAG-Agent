@@ -30,13 +30,13 @@ async def check_ollama_availability(base_url: str = "http://localhost:11434") ->
             # Делаем быстрый запрос к корню Ollama (таймаут 2 секунды)
             response = await client.get(base_url, timeout=2.0)
             if response.status_code == 200 and "Ollama is running" in response.text:
-                logger.info("✅ Успешное подключение к Ollama! Сервис активен.")
+                logger.info(" Успешное подключение к Ollama! Сервис активен.")
                 return True
             else:
-                logger.warning(f"⚠️ Ollama ответила странным статусом: {response.status_code}")
+                logger.warning(f" Ollama ответила странным статусом: {response.status_code}")
                 return False
         except (httpx.ConnectError, httpx.TimeoutException):
-            logger.error(f"❌ Ошибка: Не удалось подключиться к Ollama на {base_url}. Убедись, что приложение Ollama запущено!")
+            logger.error(f"Ошибка: Не удалось подключиться к Ollama на {base_url}. Убедись, что приложение Ollama запущено!")
             return False
 
 def _get_or_create_container() -> AppContainer:
@@ -105,14 +105,14 @@ def _build_details_markdown(response: AgentResponseEnvelope) -> str:
         basics.append(f"- **Exact mass:** {primary.exact_mass:.4f}")
     if primary.xlogp is not None:
         basics.append(f"- **XLogP:** {primary.xlogp}")
-    if primary.tpsa is not None:
-        basics.append(f"- **TPSA:** {primary.tpsa}")
-    if primary.complexity is not None:
-        basics.append(f"- **Complexity:** {primary.complexity}")
-    if primary.hbond_donor_count is not None or primary.hbond_acceptor_count is not None:
-        donor = primary.hbond_donor_count if primary.hbond_donor_count is not None else "—"
-        acceptor = primary.hbond_acceptor_count if primary.hbond_acceptor_count is not None else "—"
-        basics.append(f"- **H-bond донор/акцептор:** {donor} / {acceptor}")
+    #if primary.tpsa is not None:
+     #   basics.append(f"- **TPSA:** {primary.tpsa}")
+    #if primary.complexity is not None:
+     #   basics.append(f"- **Complexity:** {primary.complexity}")
+    #if primary.hbond_donor_count is not None or primary.hbond_acceptor_count is not None:
+     #   donor = primary.hbond_donor_count if primary.hbond_donor_count is not None else "—"
+      #  acceptor = primary.hbond_acceptor_count if primary.hbond_acceptor_count is not None else "—"
+       # basics.append(f"- **H-bond донор/акцептор:** {donor} / {acceptor}")
     lines.extend(basics)
 
     lines.append("")

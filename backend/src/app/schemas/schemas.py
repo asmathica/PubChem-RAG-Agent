@@ -11,6 +11,15 @@ def clean_string(value: str) -> str:
     return value.strip()
 
 
+def clean_query(title:str, value: str) -> str:
+    cleaned = clean_string(value)
+
+    if not cleaned:
+         
+        raise ValueError(f"{title} must not be blank")
+        
+    return cleaned
+   
 class SearchByNameInput(BaseModel):
     """
     This schema validates user input when searching for compounds
@@ -33,22 +42,10 @@ class SearchByNameInput(BaseModel):
     def strip_name(cls, value: str) -> str:
         """
         Validate and clean the compound name input.
-        Removes leading/trailing whitespace and ensures the name is not empty.
-        
-        Args:
-            value: Raw input string from user
-            
-        Returns:
-            Stripped and validated name string
-            
+               
         """
-        cleaned = clean_string(value)
 
-        if not cleaned:
-         
-         raise ValueError("name must not be blank")
-        
-        return cleaned
+        return clean_query("Name", value)
 
 
 class SearchBySMILESInput(BaseModel):
@@ -72,22 +69,9 @@ class SearchBySMILESInput(BaseModel):
     def strip_smiles(cls, value: str) -> str:
         """
         Validate and clean the SMILES string input.
-        
-        Removes leading/trailing whitespace and ensures the string is not empty.
-        
-        Args:
-            value: Raw SMILES string from user
-            
-        Returns:
-            Stripped and validated SMILES string
-        """
-        cleaned = clean_string(value)
 
-        if not cleaned:
-         
-         raise ValueError("SMILES must not be blank")
-        
-        return cleaned
+        """
+        return clean_query("SMILES", value)
 
 
 class SearchByFormulaInput(BaseModel):
@@ -113,25 +97,9 @@ class SearchByFormulaInput(BaseModel):
     def strip_formula(cls, value: str) -> str:
         """
         Validate and clean the molecular formula input.
-        
-        Removes leading/trailing whitespace, converts to uppercase,
-        and ensures the formula is not empty.
-        
-        Args:
-            value: Raw formula string from user
-            
-        Returns:
-            Stripped and validated formula string (uppercase)
-            
+
         """
-        cleaned = clean_string(value)
-
-        if not cleaned:
-         
-         raise ValueError("Formula must not be blank")
-        
-        return cleaned
-
+        return clean_query("Formula", value)
 
 
 class SearchByMassRangeArgs(BaseModel):
@@ -159,7 +127,6 @@ class SearchByMassRangeArgs(BaseModel):
     limit: int = Field(default=5, ge=1, le=10, description="Maximum number of candidate compounds to return.")
 
 
-
 class SearchByInChIKeyArgs(BaseModel):
     """
     This schema validates InChIKey strings for compound search.
@@ -179,13 +146,8 @@ class SearchByInChIKeyArgs(BaseModel):
     @field_validator("inchikey", mode = "before")
     @classmethod
     def strip_inchikey(cls, value: str) -> str:
-        cleaned = clean_string(value)
 
-        if not cleaned:
-         
-         raise ValueError("InChIKey must not be blank")
-        
-        return cleaned
+        return clean_query("InChIKey", value)
 
 
 ###############################
@@ -201,11 +163,7 @@ class NameToSmilesArgs(BaseModel):
     @field_validator("name")
     @classmethod
     def strip_name(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("name must not be blank")
-        return cleaned
-
+        return clean_query("Name", value)
 
 class SearchBySynonymArgs(BaseModel):
     synonym: str = Field(min_length=1, max_length=160, description="Alternative name or synonym for the compound.")
@@ -214,10 +172,8 @@ class SearchBySynonymArgs(BaseModel):
     @field_validator("synonym")
     @classmethod
     def strip_synonym(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("synonym must not be blank")
-        return cleaned
+
+        return clean_query("Synonum", value)
 
 
     
