@@ -1,9 +1,12 @@
 import json
 import logging
 import re,time
+from uuid import uuid4
+from collections import deque
 from functools import lru_cache
 from dataclasses import dataclass, field
 from typing import Any
+from enum import Enum
 
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
@@ -22,26 +25,129 @@ def _to_json_safe(value: Any) -> Any:
     """
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
+class ObservationType(str, Enum):
+    SPAN = "span"
+    GENERATION = "generation"
+    EVENT = "event"
 
 @dataclass
 class ToolTraceEvent:
     step: int
+
     tool_name: str
+
     arguments: dict[str, Any]
+
     result: dict[str, Any] | None = None
     error_message: str | None = None
+
     duration_ms: float | None = None  # Время ответа MCP сервера
-    transport_type: str = "stdio"    
+
+    transport_type: str = "stdio"
+
+    observation_id: str | None = None
+    parent_observation_id: str | None = None
+
+    observation_type: ObservationType = ObservationType.SPAN
 
 
 @dataclass
 class ToolTraceRecorder:
+
     events: list[ToolTraceEvent] = field(default_factory=list)
     _start_times: dict[str, float] = field(default_factory=dict, repr=False)
+
+    _span_stack: deque[str] = field(
+        default_factory=deque,
+        repr=False,
+    )
+
+    def _current_parent_id(self) -> str | None:
+        return self._span_stack[-1] if self._span_stack else None
+
 
     def start_call(self, tool_name: str):
         """Recording the start time of the MCP tool call"""
         self._start_times[tool_name] = time.perf_counter()
+
+    def start_span(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        observation_type: ObservationType = ObservationType.SPAN,
+        transport: str = "stdio",
+    ) -> str:
+
+        observation_id = str(uuid4())
+
+        event = ToolTraceEvent(
+            step=len(self.events) + 1,
+            tool_name=name,
+            arguments=_to_json_safe(arguments or {}),
+            transport_type=transport,
+            observation_id=observation_id,
+            parent_observation_id=self._current_parent_id(),
+            observation_type=observation_type,
+        )
+
+        self.events.append(event)
+
+        self._start_times[observation_id] = time.perf_counter()
+
+        self._span_stack.append(observation_id)
+
+        return observation_id
+
+    def end_span(
+        self,
+        observation_id: str,
+        *,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> None:
+
+        started_at = self._start_times.pop(observation_id, None)
+
+        duration = None
+        if started_at is not None:
+            duration = (
+                time.perf_counter() - started_at
+            ) * 1000
+
+        for event in reversed(self.events):
+
+            if event.observation_id == observation_id:
+
+                event.result = (
+                    _to_json_safe(result)
+                    if result is not None
+                    else None
+                )
+
+                event.error_message = error_message
+
+                event.duration_ms = (
+                    round(duration, 2)
+                    if duration is not None
+                    else None
+                )
+
+                break
+
+        # безопасно удаляем только текущий span
+        if (
+            self._span_stack
+            and self._span_stack[-1] == observation_id
+        ):
+            self._span_stack.pop()
+
+        else:
+            try:
+                self._span_stack.remove(observation_id)
+            except ValueError:
+                pass
+
 
     def record(
         self,
@@ -136,7 +242,7 @@ def build_langchain_tracing_config(
 ) -> LangChainTracingConfig:
     
     """Builds a tracing configuration adapted for MCP. Adds architecture tags for filtering in Langfuse."""
-
+    print("Вход в build_langchain_tracing_config")
     metadata = {
         "langfuse_tags": ["pubchem-agent","mcp-architecture", provider],
         "agent_provider": provider,

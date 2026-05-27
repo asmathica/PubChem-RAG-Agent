@@ -64,12 +64,7 @@ async def main():
             system_prompt=prompt
         )
         
-        # Тестовый вызов (раскомментируй для проверки в консоли)
-        # from langchain_core.messages import HumanMessage
-        # print("🤖 Отправка тестового запроса агенту...")
-        # response = await agent.ainvoke({"messages": [HumanMessage(content="Найди аспирин")]})
-        # print("--- Ответ Агента ---")
-        # print(response)
+        
 
 if __name__ == "__main__":
     asyncio.run(main())
