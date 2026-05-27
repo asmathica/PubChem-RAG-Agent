@@ -62,10 +62,10 @@ async def _fetch_props(cid: int, client: httpx.AsyncClient) -> dict:
                 "inchi_key": props.get("InChIKey"),
                 "exact_mass": _coerce_float(props.get("ExactMass")),
                 "xlogp": _coerce_float(props.get("XLogP")),
-                "tpsa": _coerce_float(props.get("TPSA")),
-                "complexity": _coerce_float(props.get("Complexity")),
-                "hbond_donor_count": _coerce_int(props.get("HBondDonorCount")),
-                "hbond_acceptor_count": _coerce_int(props.get("HBondAcceptorCount")),
+              # "tpsa": _coerce_float(props.get("TPSA")),
+               # "complexity": _coerce_float(props.get("Complexity")),
+                #"hbond_donor_count": _coerce_int(props.get("HBondDonorCount")),
+                #"hbond_acceptor_count": _coerce_int(props.get("HBondAcceptorCount")),
                 "charge": _coerce_int(props.get("Charge")),
             }
     except Exception:

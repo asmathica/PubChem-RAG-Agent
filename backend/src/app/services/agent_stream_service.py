@@ -3,7 +3,6 @@ import asyncio
 from typing import Any
 import uuid
 
-from app.adapter.pubchem_adapter import PubChemAdapter
 from app.agent.error_mapper import normalize_agent_exception
 from app.agent.meta import build_capability_response, is_capability_question
 from app.agent.model_factory import resolve_provider_model_name
