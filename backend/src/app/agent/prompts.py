@@ -28,5 +28,4 @@ Workflow:
 
 Question: {input}
 
-
 Thought: """
