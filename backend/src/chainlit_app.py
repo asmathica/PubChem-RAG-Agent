@@ -5,6 +5,7 @@ import json
 import uuid
 
 import chainlit as cl
+from chainlit.input_widget import Select
 
 from app.agent.meta import is_capability_question
 from app.container import AppContainer, build_container
@@ -176,16 +177,54 @@ async def set_starters(
     ]
 
 
+# Опции дропдауна "LLM провайдер" в Chainlit settings (⚙️ в правом верхнем углу).
+# Порядок повторяет fallback chain в model_factory.py: mistral → gemini → openrouter → nvidia.
+# `ollama` оставлен в конце для локальной разработки. `openai` и `modal_glm` исключены:
+# для openai нет ключа в .env, modal_glm — устаревший Modal-deployment.
+# Fallback chain работает всегда (LLM_ENABLE_FALLBACK=true) — этот селектор задаёт только PRIMARY.
+PROVIDER_OPTIONS = ["mistral", "gemini", "openrouter", "nvidia", "ollama"]
+
+
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    ollama_ok = await check_ollama_availability("http://localhost:11434")
-    
-    if not ollama_ok:
-        await cl.Message(content="❌ Ошибка: Локальная модель Ollama недоступна. Пожалуйста, запусти приложение Ollama в системе и обнови страницу.").send()
     container = _get_or_create_container()
 
+    # Health-check Ollama делаем только если он primary (это локальный сервис, может быть
+    # выключен). Для облачных провайдеров (Mistral/Gemini/OpenRouter/NVIDIA) пинговать смысла
+    # нет — `Runnable.with_fallbacks(...)` в model_factory.py подменит недоступного на
+    # следующего в цепочке прямо во время запроса.
+    if container.settings.llm_default_provider == "ollama":
+        ollama_ok = await check_ollama_availability("http://localhost:11434")
+        if not ollama_ok:
+            await cl.Message(content="❌ Ошибка: Локальная модель Ollama недоступна. Пожалуйста, запусти приложение Ollama в системе и обнови страницу.").send()
+
     _get_session_id()
-    cl.user_session.set("llm_provider", container.settings.llm_default_provider)
+
+    # Initial value селектора: дефолт из .env (LLM_DEFAULT_PROVIDER), если он в списке;
+    # иначе откатываемся на первый элемент (mistral).
+    default_provider = container.settings.llm_default_provider
+    initial = default_provider if default_provider in PROVIDER_OPTIONS else PROVIDER_OPTIONS[0]
+
+    # ChatSettings.send() рендерит панель и сразу возвращает текущие значения виджетов.
+    # Фиксируем выбор в user_session — он используется в on_message ниже как provider.
+    settings = await cl.ChatSettings(
+        [
+            Select(
+                id="llm_provider",
+                label="LLM провайдер (primary; fallback chain активен в любом случае)",
+                values=PROVIDER_OPTIONS,
+                initial_value=initial,
+            ),
+        ]
+    ).send()
+    cl.user_session.set("llm_provider", settings["llm_provider"])
+
+
+@cl.on_settings_update
+async def on_settings_update(settings: dict) -> None:
+    """Срабатывает когда пользователь меняет провайдер в Chainlit settings панели
+    ПОСЛЕ старта чата. Обновляем user_session — следующий on_message пойдёт на новый primary."""
+    cl.user_session.set("llm_provider", settings["llm_provider"])
 
 
 @cl.on_chat_end
