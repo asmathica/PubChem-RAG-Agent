@@ -19,7 +19,12 @@ from contextlib import asynccontextmanager
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ToolCallLimitMiddleware, wrap_tool_call
+from langchain.agents.middleware import (
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
+    ToolCallLimitMiddleware,
+    wrap_tool_call,
+)
 from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langgraph.types import Command
@@ -201,6 +206,11 @@ async def prepare_agent_runtime(
         _build_tool_trace_recorder_middleware(recorder),
         _build_duplicate_tool_call_guard(),
         ToolCallLimitMiddleware(run_limit=max(5, settings.agent_max_steps)),
+        # Старые PubChem ToolMessages дропаются перед LLM, checkpointed state не меняется.
+        # 60k ≈ половина floor'а 128k (NVIDIA Llama 3.3 70B); keep — последние 5 tool результатов.
+        ContextEditingMiddleware(
+            edits=[ClearToolUsesEdit(trigger=60_000, keep=5)],
+        ),
     ]
 
       tracing = build_langchain_tracing_config(
