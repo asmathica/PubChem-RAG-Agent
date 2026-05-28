@@ -35,10 +35,11 @@ class AgentStreamService:
         request: AgentRequest,
         *,
         trace_id: str | None = None,
+        session_id: str | None = None,
         extra_callbacks: list[Any] | None = None,
         metadata_overrides: dict[str, Any] | None = None,
     ) -> AgentResponseEnvelope:
-        
+
         resolved_trace_id = trace_id or uuid.uuid4().hex
 
         if is_capability_question(request.text):
@@ -72,6 +73,7 @@ class AgentStreamService:
             trace_id=resolved_trace_id,
             mcp_client=self.mcp_client,
             provider=request.provider,
+            session_id=session_id,
         ) as runtime:
             logger.debug(f"Рантайм создан для провайдера: {request.provider}")
             logger.debug("Сборка конфигурации invoke_config...")

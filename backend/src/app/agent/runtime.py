@@ -26,6 +26,7 @@ from langgraph.types import Command
 
 
 from app.agent.model_factory import build_chat_model
+from app.agent.persistence import get_checkpointer
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tracing import LangChainTracingConfig, ToolTraceRecorder, build_langchain_tracing_config
 from app.config import Settings
@@ -170,6 +171,7 @@ async def prepare_agent_runtime(
     trace_id: str,
     mcp_client: MultiServerMCPClient,
     provider: LLMProviderName | None = None,
+    session_id: str | None = None,
 ): #-> PreparedAgentRuntime:
     """
     Initializes and assembles the AI ​​agent's runtime environment, configuring connections to MCP servers, language model (LLM) parameters, 
@@ -207,19 +209,31 @@ async def prepare_agent_runtime(
         provider=resolved_model.provider,
     )
 
+      # Singleton checkpointer для conversation memory (LangGraph state per thread_id).
+      # AsyncPostgresSaver если задан AGENT_CHECKPOINT_POSTGRES_URL, иначе InMemorySaver.
+      checkpointer = await get_checkpointer(settings)
+
       agent = create_agent(
         model=resolved_model.instance,
         tools=mcp_tools,
         system_prompt=SYSTEM_PROMPT,
         middleware=middleware,
+        checkpointer=checkpointer,
     )
+
+      # thread_id ОБЯЗАН быть стабильным per-conversation, чтобы checkpointer
+      # подтянул историю диалога. session_id (из chainlit user_session) живёт
+      # всю сессию чата; trace_id — короткоживущий per-request, для observability.
+      # Fallback на trace_id оставлен на случай если caller не пробросил session_id
+      # (тогда memory работает только в рамках одного запроса).
+      conversation_thread_id = session_id or trace_id
 
       invoke_config: dict[str, Any] = {
         "recursion_limit": max(8, settings.agent_max_steps * 2 + 2),
         "metadata": tracing.metadata,
         "max_concurrency": 1,
         "configurable": {
-        "thread_id": trace_id, # Важно для изоляции сессий
+        "thread_id": conversation_thread_id,
     }
     }
     

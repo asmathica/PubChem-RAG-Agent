@@ -212,6 +212,7 @@ async def on_message(message: cl.Message) -> None:
                     include_raw=True,
                 ),
                 trace_id=trace_id,
+                session_id=session_id,
                 metadata_overrides={
                     "surface": "chainlit",
                     "chainlit_session_id": session_id,

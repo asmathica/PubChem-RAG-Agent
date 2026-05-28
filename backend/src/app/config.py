@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     langfuse_secret_key: SecretStr | None = None
     langfuse_base_url: str = "http://localhost:3000"
 
+    # Conversation memory backend для агента. Если задан — AsyncPostgresSaver;
+    # иначе fallback на InMemorySaver (state в RAM, теряется при restart).
+    # Пример: postgresql://langfuse:langfuse@localhost:5433/langfuse
+    agent_checkpoint_postgres_url: SecretStr | None = None
+
     cors_origins: tuple[str, ...] = (
         "http://localhost:3000",
         "http://127.0.0.1:3000",

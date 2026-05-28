@@ -50,9 +50,15 @@ class AgentService:
         self.runtime_factory = runtime_factory
         self.manual_trace_recorder = manual_trace_recorder
 
-    async def execute(self, request: AgentRequest, *, trace_id: str | None = None) -> AgentResponseEnvelope:
-        resolved_trace_id = trace_id or uuid.uuid4().hex        
-        
+    async def execute(
+        self,
+        request: AgentRequest,
+        *,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+    ) -> AgentResponseEnvelope:
+        resolved_trace_id = trace_id or uuid.uuid4().hex
+
         if is_capability_question(request.text):
             provider_name, model_name = resolve_provider_model_name(self.settings, request.provider)
             response = build_capability_response(
@@ -78,6 +84,7 @@ class AgentService:
             trace_id=resolved_trace_id,
             mcp_client=self.mcp_client,
             provider=request.provider,
+            session_id=session_id,
         ) as runtime:
             logger.info(f"--- [AgentService] Runtime создан: provider {request.provider}, настройки: {self.settings}")
 
