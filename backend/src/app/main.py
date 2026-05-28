@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agent.persistence import close_checkpointer
 from app.api.routes.agent import router as agent_router
 from app.api.routes.health import router as health_router
 from app.api.routes.interpret import router as interpret_router
@@ -69,6 +70,7 @@ def create_app(container_override: AppContainer | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await close_checkpointer()
 
             close = getattr(container, "close", None)
             if callable(close):
