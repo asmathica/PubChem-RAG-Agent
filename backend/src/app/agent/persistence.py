@@ -19,6 +19,7 @@ shutdown (вызвать в lifespan FastAPI или при завершении 
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -30,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _checkpointer: Any = None
 _postgres_cm: Any = None  # async context manager kept open for lifetime of process
+# Lock защищает init от race: два concurrent first-callers могли оба пройти
+# `if _checkpointer is not None: return None` и оба войти в __aenter__() →
+# второй pool оставался без ссылки и утекал. Double-check pattern: fast path
+# без lock (когда уже инициализирован), slow path под lock.
+_init_lock = asyncio.Lock()
 
 
 async def get_checkpointer(settings: Settings) -> Any:
@@ -40,32 +46,46 @@ async def get_checkpointer(settings: Settings) -> Any:
     """
     global _checkpointer, _postgres_cm
 
+    # Fast path: уже проинициализирован — без lock (95%+ вызовов попадают сюда).
     if _checkpointer is not None:
         return _checkpointer
 
-    postgres_url_secret = settings.agent_checkpoint_postgres_url
-    postgres_url = postgres_url_secret.get_secret_value() if postgres_url_secret else None
+    async with _init_lock:
+        # Re-check под lock — между первым check и захватом lock другой корутин
+        # мог уже всё проинициализировать.
+        if _checkpointer is not None:
+            return _checkpointer
 
-    if postgres_url:
-        try:
+        postgres_url_secret = settings.agent_checkpoint_postgres_url
+        postgres_url = postgres_url_secret.get_secret_value() if postgres_url_secret else None
+
+        if postgres_url:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-            _postgres_cm = AsyncPostgresSaver.from_conn_string(postgres_url)
-            _checkpointer = await _postgres_cm.__aenter__()
-            await _checkpointer.setup()
-            logger.info("AsyncPostgresSaver инициализирован для conversation memory")
-        except Exception as exc:
-            logger.error(
-                f"AsyncPostgresSaver init failed: {exc}. Fallback на InMemorySaver.",
-                exc_info=True,
-            )
-            _postgres_cm = None
+            cm = AsyncPostgresSaver.from_conn_string(postgres_url)
+            try:
+                saver = await cm.__aenter__()
+                # setup() в отдельный try чтобы при падении гарантированно вызвать
+                # __aexit__() на УЖЕ открытом context manager — иначе pool утечёт.
+                try:
+                    await saver.setup()
+                except Exception:
+                    await cm.__aexit__(None, None, None)
+                    raise
+                _postgres_cm = cm
+                _checkpointer = saver
+                logger.info("AsyncPostgresSaver инициализирован для conversation memory")
+            except Exception as exc:
+                logger.error(
+                    f"AsyncPostgresSaver init failed: {exc}. Fallback на InMemorySaver.",
+                    exc_info=True,
+                )
+                _checkpointer = InMemorySaver()
+        else:
             _checkpointer = InMemorySaver()
-    else:
-        _checkpointer = InMemorySaver()
-        logger.info("InMemorySaver используется для conversation memory (dev fallback)")
+            logger.info("InMemorySaver используется для conversation memory (dev fallback)")
 
-    return _checkpointer
+        return _checkpointer
 
 
 async def close_checkpointer() -> None:
