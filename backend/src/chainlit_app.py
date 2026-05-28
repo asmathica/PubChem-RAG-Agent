@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from typing import cast
 import json
+import os
 import uuid
 
 import chainlit as cl
 from chainlit.input_widget import Select
+from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+from chainlit.types import ThreadDict
 
 from app.agent.meta import is_capability_question
 from app.container import AppContainer, build_container
@@ -48,12 +51,43 @@ def _get_or_create_container() -> AppContainer:
     return cast(AppContainer, container)
 
 
-def _get_session_id() -> str:
-    session_id = cl.user_session.get("pubchem_session_id")
-    if session_id is None:
-        session_id = uuid.uuid4().hex
-        cl.user_session.set("pubchem_session_id", session_id)
-    return cast(str, session_id)
+def _current_thread_id() -> str:
+    """LangGraph thread_id = id текущего Chainlit chat'а.
+    Каждый чат в sidebar имеет свой thread_id (Chainlit сам генерирует UUID при
+    создании нового чата). Новый чат → новый thread_id → свежая память агента.
+    Resume старого чата → старый thread_id → checkpointer подхватит state."""
+    tid = cl.context.session.thread_id
+    if tid:
+        return cast(str, tid)
+    # Fallback (не должен срабатывать внутри chat lifecycle hooks, но на всякий случай).
+    fallback = cl.user_session.get("pubchem_session_id")
+    if fallback is None:
+        fallback = uuid.uuid4().hex
+        cl.user_session.set("pubchem_session_id", fallback)
+    return cast(str, fallback)
+
+
+# Data layer для хранения чатов, сообщений и пользователей в Postgres. Без него
+# Chainlit UI не показывает sidebar с историей чатов и кнопку "New Chat" — это
+# единственный способ получить multi-chat функционал. Регистрируется только при
+# наличии DATABASE_URL в .env (graceful fallback на dev режим без persistence).
+_DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if _DATABASE_URL:
+    @cl.data_layer
+    def get_data_layer():
+        return SQLAlchemyDataLayer(conninfo=_DATABASE_URL)
+
+
+@cl.password_auth_callback
+def auth_callback(username: str, password: str) -> cl.User | None:
+    """Простейший dev-auth: любой username + любой password = login.
+    `identifier=username` — ключ пользователя в data layer (его чаты видны
+    только ему). Для production заменить на проверку DB / OAuth / SSO.
+    См. https://docs.chainlit.io/authentication."""
+    if username:
+        return cl.User(identifier=username, metadata={"role": "user"})
+    return None
 
 
 def _humanize_runtime_error(exc: BaseException) -> str:
@@ -198,7 +232,8 @@ async def on_chat_start() -> None:
         if not ollama_ok:
             await cl.Message(content="❌ Ошибка: Локальная модель Ollama недоступна. Пожалуйста, запусти приложение Ollama в системе и обнови страницу.").send()
 
-    _get_session_id()
+    # thread_id управляется Chainlit (cl.context.session.thread_id), его не нужно
+    # генерировать руками — каждый новый чат в UI получает свой UUID автоматически.
 
     # Initial value селектора: дефолт из .env (LLM_DEFAULT_PROVIDER), если он в списке;
     # иначе откатываемся на первый элемент (mistral).
@@ -227,6 +262,21 @@ async def on_settings_update(settings: dict) -> None:
     cl.user_session.set("llm_provider", settings["llm_provider"])
 
 
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict) -> None:
+    """Срабатывает когда пользователь кликает по старому чату в sidebar.
+    Chainlit сам отрисует прошлые сообщения из data layer (мы их не трогаем),
+    а нам нужно восстановить контейнер DI и last-known provider для этой
+    сессии. LangGraph checkpointer подхватит свой state по thread_id автоматически
+    при первом on_message — он хранит state per-thread, и thread_id у resume чата
+    тот же, что был при on_chat_start."""
+    _get_or_create_container()
+    container = cl.user_session.get("container")
+    metadata = thread.get("metadata") or {}
+    provider = metadata.get("agent_provider") or cast(AppContainer, container).settings.llm_default_provider
+    cl.user_session.set("llm_provider", provider)
+
+
 @cl.on_chat_end
 async def on_chat_end() -> None:
     container = cl.user_session.get("container")
@@ -237,7 +287,7 @@ async def on_chat_end() -> None:
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     container = _get_or_create_container()
-    session_id = _get_session_id()
+    session_id = _current_thread_id()
     provider = cast(str, cl.user_session.get("llm_provider") or container.settings.llm_default_provider)
     trace_id = uuid.uuid4().hex
     capability_mode = is_capability_question(message.content)
