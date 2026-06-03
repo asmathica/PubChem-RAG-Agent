@@ -276,53 +276,45 @@ async def on_chat_end() -> None:
         await cast(AppContainer, container).close()
 
 
+def _chainlit_metadata(session_id: str, provider: str) -> dict[str, str | list[str]]:
+    """Метаданные для Langfuse: связывают трейсы с chat'ом и пользователем
+    в одной surface ('chainlit'), добавляют tags для фильтрации."""
+    return {
+        "surface": "chainlit",
+        "chainlit_session_id": session_id,
+        "langfuse_session_id": session_id,
+        "langfuse_user_id": session_id,
+        "langfuse_tags": ["pubchem-agent", provider, "chainlit"],
+        "agent_provider": provider,
+    }
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     container = _get_or_create_container()
     session_id = _current_thread_id()
     provider = cast(str, cl.user_session.get("llm_provider") or container.settings.llm_default_provider)
     trace_id = uuid.uuid4().hex
-    capability_mode = is_capability_question(message.content)
+
+    request = AgentRequest(text=message.content, provider=provider, include_raw=True)
+    metadata_overrides = _chainlit_metadata(session_id, provider)
+
+    async def _execute() -> AgentResponseEnvelope:
+        return await container.agent_service.execute(
+            request,
+            trace_id=trace_id,
+            session_id=session_id,
+            metadata_overrides=metadata_overrides,
+        )
 
     try:
-        if capability_mode:
-            response = await container.agent_stream_service.execute(
-                AgentRequest(
-                    text=message.content,
-                    provider=provider,
-                    include_raw=True,
-                ),
-                trace_id=trace_id,
-                session_id=session_id,
-                metadata_overrides={
-                    "surface": "chainlit",
-                    "chainlit_session_id": session_id,
-                    "langfuse_session_id": session_id,
-                    "langfuse_user_id": session_id,
-                    "langfuse_tags": ["pubchem-agent", provider, "chainlit"],
-                    "agent_provider": provider,
-                },
-            )
+        if is_capability_question(message.content):
+            # Capability questions — без cl.Step (ответ статичный, быстрый).
+            response = await _execute()
         else:
             async with cl.Step(name="Поиск в PubChem") as step:
                 step.output = "Ищу кандидатов в PubChem и собираю ключевые свойства..."
-                response = await container.agent_stream_service.execute(
-                    AgentRequest(
-                        text=message.content,
-                        provider=provider,
-                        include_raw=True,
-                    ),
-                    trace_id=trace_id,
-                    session_id=session_id,
-                    metadata_overrides={
-                        "surface": "chainlit",
-                        "chainlit_session_id": session_id,
-                        "langfuse_session_id": session_id,
-                        "langfuse_user_id": session_id,
-                        "langfuse_tags": ["pubchem-agent", provider, "chainlit"],
-                        "agent_provider": provider,
-                    },
-                )
+                response = await _execute()
                 step.output = "Поиск завершён."
     except AppError as error:
         await cl.Message(content=error.message, author="PubChem Agent").send()
