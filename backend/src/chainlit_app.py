@@ -28,19 +28,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def check_ollama_availability(base_url: str = "http://localhost:11434") -> bool:
-    """Проверяет, запущена ли Ollama и доступна ли она по сети."""
+    """Проверяет, запущена ли локальная Ollama. Таймаут 2 секунды — чтобы не вешать UI."""
     async with httpx.AsyncClient() as client:
         try:
-            # Делаем быстрый запрос к корню Ollama (таймаут 2 секунды)
             response = await client.get(base_url, timeout=2.0)
             if response.status_code == 200 and "Ollama is running" in response.text:
-                logger.info(" Успешное подключение к Ollama! Сервис активен.")
+                logger.info("Ollama доступна на %s", base_url)
                 return True
-            else:
-                logger.warning(f" Ollama ответила странным статусом: {response.status_code}")
-                return False
+            logger.warning("Ollama ответила статусом %s", response.status_code)
+            return False
         except (httpx.ConnectError, httpx.TimeoutException):
-            logger.error(f"Ошибка: Не удалось подключиться к Ollama на {base_url}. Убедись, что приложение Ollama запущено!")
+            logger.error("Ollama недоступна на %s — запусти приложение Ollama", base_url)
             return False
 
 def _get_or_create_container() -> AppContainer:
@@ -409,13 +407,13 @@ async def on_message(message: cl.Message) -> None:
             normalized.clarification_question or "Агент завершил поиск без дополнительного пояснения."
         )
 
-    # Visibility into what the UI is being told to render — these go to
-    # uvicorn/chainlit stdout so an operator can see exactly which custom
-    # elements and sidebar items left the backend on a given turn.
-    print(
-        f"!!! RENDER inline={[el.__class__.__name__ + ':' + (getattr(el, 'name', '?') or '?') for el in inline_elements]} "
-        f"sidebar={[el.__class__.__name__ + ':' + (getattr(el, 'name', '?') or '?') for el in sidebar_elements]} "
-        f"primary_cid={primary.cid if primary else None}"
+    # Debug-видимость что UI рендерит. Раньше было print() — оператор всё равно
+    # читает логи Chainlit, поэтому logger.debug достаточно.
+    logger.debug(
+        "render: inline=%s sidebar=%s primary_cid=%s",
+        [f"{el.__class__.__name__}:{getattr(el, 'name', '?') or '?'}" for el in inline_elements],
+        [f"{el.__class__.__name__}:{getattr(el, 'name', '?') or '?'}" for el in sidebar_elements],
+        primary.cid if primary else None,
     )
 
     await cl.Message(
@@ -424,10 +422,10 @@ async def on_message(message: cl.Message) -> None:
         author="PubChem Agent",
     ).send()
 
-    # Push extras to the explicit element sidebar. The elements also keep
-    # display="side" so Chainlit's legacy side-view effect does not clear the
-    # explicit sidebar while it processes the emitted element events.
+    # display="side" сохранён у элементов: legacy side-view Chainlit не сбрасывает
+    # explicit sidebar пока обрабатываются emitted element events.
     if sidebar_elements:
-        await cl.ElementSidebar.set_title(f"Подробности — {primary.title or 'вещество'}" if primary else "Подробности")
+        sidebar_title = f"Подробности — {primary.title or 'вещество'}" if primary else "Подробности"
+        await cl.ElementSidebar.set_title(sidebar_title)
         await cl.ElementSidebar.set_elements(sidebar_elements, key=trace_id)
-        print(f"!!! SIDEBAR sent {len(sidebar_elements)} elements + title='Подробности — {primary.title if primary else 'вещество'}'")
+        logger.debug("sidebar sent: %d elements, title=%r", len(sidebar_elements), sidebar_title)

@@ -1,22 +1,23 @@
 """
-MODULE: AI Agent Runtime Orchestrator
--------------------------------------
-PURPOSE:
-Responsible for assembling and configuring the AI agent lifecycle. Acts as an MCP client, connecting the language model (LLM) to the tool server.
+Сборка runtime'а LangGraph-агента: model + MCP tools + middleware + checkpointer.
 
-MAIN FUNCTIONS:
-- Initialization and connection to remote MCP tool servers.
-- Configuring "circuit breakers" (Middleware): loop protection and step limits.
-- Configuring the monitoring system (Tracing) for debugging reasoning chains.
-- Assembling the final agent object, ready to execute user tasks.
-
-This file separates the infrastructure startup logic from the implementation of the tools themselves.
+Главное:
+- `prepare_agent_runtime(...)` — async context manager. Открывает MCP-сессию,
+  собирает агент через `create_agent(...)`, отдаёт готовый `PreparedAgentRuntime`.
+- Middleware-стек (в порядке вложенности):
+    1. tool-trace recorder        — пишет каждый tool-call в ToolTraceRecorder
+    2. duplicate-call guard       — блокирует повторный tool-call с теми же args
+    3. ToolCallLimitMiddleware    — hard limit на число tool-вызовов за run
+    4. ContextEditingMiddleware   — дропает старые ToolMessages при >60k токенов
+- Checkpointer (LangGraph state per `thread_id`) — singleton через persistence.py.
 """
-import json, logging
+from __future__ import annotations
+
+import json
+import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
-from contextlib import asynccontextmanager
-from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
@@ -26,25 +27,44 @@ from langchain.agents.middleware import (
     wrap_tool_call,
 )
 from langchain_core.messages import ToolMessage
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langgraph.types import Command
-
 
 from app.agent.model_factory import build_chat_model
 from app.agent.persistence import get_checkpointer
 from app.agent.prompts import SYSTEM_PROMPT
-from app.agent.tracing import LangChainTracingConfig, ToolTraceRecorder, build_langchain_tracing_config
+from app.agent.tracing import (
+    LangChainTracingConfig,
+    ToolTraceRecorder,
+    build_langchain_tracing_config,
+)
 from app.config import Settings
 from app.schemas.agent import LLMProviderName
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PreparedAgentRuntime:
+    """Готовый к запуску агент + всё что нужно для одного invoke."""
+
+    agent: Any
+    recorder: ToolTraceRecorder
+    invoke_config: dict[str, Any]
+    provider: LLMProviderName
+    model_name: str
+    tracing: LangChainTracingConfig
+    mcp_client: MultiServerMCPClient
+
 
 def _build_tool_trace_recorder_middleware(recorder: ToolTraceRecorder) -> Any:
-    """Middleware that writes every MCP tool invocation into the ToolTraceRecorder.
+    """Пишет каждый MCP tool-вызов в ToolTraceRecorder.
 
-    Sits as the OUTERMOST tool-call middleware so it observes both real handler
-    responses AND short-circuit ToolMessages produced by inner middleware
-    (e.g. duplicate-call guard). Captures call name, arguments, parsed JSON
-    result, and any exception or PubChem-style ``ok=False`` payload.
+    Стоит САМЫМ ВНЕШНИМ tool-middleware'ом — видит и реальные ответы handler'а,
+    и short-circuit ToolMessages от внутренних middleware (напр. duplicate guard).
+    Захватывает имя инструмента, аргументы, распарсенный JSON-результат и любую
+    ошибку (включая PubChem-style `ok=False`).
     """
 
     @wrap_tool_call(name="record_tool_invocations")
@@ -55,52 +75,16 @@ def _build_tool_trace_recorder_middleware(recorder: ToolTraceRecorder) -> Any:
         try:
             response = await handler(request)
         except Exception as exc:
-            recorder.record(
-                tool_name=tool_name,
-                arguments=arguments,
-                error_message=str(exc),
-            )
+            recorder.record(tool_name=tool_name, arguments=arguments, error_message=str(exc))
             raise
 
+        # Command-ответ (резкий control-flow) — просто пишем факт вызова без payload'а.
         if isinstance(response, Command):
             recorder.record(tool_name=tool_name, arguments=arguments)
             return response
 
-        result: dict[str, Any] | None = None
-        error_message: str | None = None
-        content = getattr(response, "content", None)
-
-        def _parse_text_payload(text: str) -> dict[str, Any]:
-            try:
-                parsed = json.loads(text)
-            except ValueError:
-                return {"text": text}
-            return parsed if isinstance(parsed, dict) else {"value": parsed}
-
-        if isinstance(content, str):
-            result = _parse_text_payload(content)
-        elif isinstance(content, dict):
-            result = content
-        elif isinstance(content, list):
-            text_chunks: list[str] = []
-            for chunk in content:
-                if isinstance(chunk, str):
-                    text_chunks.append(chunk)
-                elif isinstance(chunk, dict) and chunk.get("type") == "text":
-                    text_value = chunk.get("text", "")
-                    if isinstance(text_value, str):
-                        text_chunks.append(text_value)
-            joined = "".join(text_chunks)
-            if joined:
-                result = _parse_text_payload(joined)
-
-        if isinstance(result, dict):
-            if getattr(response, "status", None) == "error" or result.get("ok") is False:
-                error_payload = result.get("error") or result.get("message")
-                if isinstance(error_payload, dict):
-                    error_message = error_payload.get("message")
-                elif isinstance(error_payload, str):
-                    error_message = error_payload
+        result = _extract_tool_result_dict(response)
+        error_message = _extract_error_message(response, result)
 
         recorder.record(
             tool_name=tool_name,
@@ -111,37 +95,65 @@ def _build_tool_trace_recorder_middleware(recorder: ToolTraceRecorder) -> Any:
         return response
 
     return record_tool_invocations
-import logging
-logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PreparedAgentRuntime:
-    agent: Any
-    recorder: ToolTraceRecorder
-    invoke_config: dict[str, Any]
-    provider: LLMProviderName
-    model_name: str
-    tracing: LangChainTracingConfig
-    mcp_client: MultiServerMCPClient
+def _extract_tool_result_dict(response: Any) -> dict[str, Any] | None:
+    """Парсит content tool-ответа в dict. MCP отдаёт JSON-строку в content[0].text,
+    бывает list[ContentItem] или сразу dict — нормализуем к одному виду."""
+    content = getattr(response, "content", None)
+
+    def _parse_text(text: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return {"text": text}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+    if isinstance(content, str):
+        return _parse_text(content)
+    if isinstance(content, dict):
+        return content
+    if isinstance(content, list):
+        text_chunks: list[str] = []
+        for chunk in content:
+            if isinstance(chunk, str):
+                text_chunks.append(chunk)
+            elif isinstance(chunk, dict) and chunk.get("type") == "text":
+                text_value = chunk.get("text", "")
+                if isinstance(text_value, str):
+                    text_chunks.append(text_value)
+        joined = "".join(text_chunks)
+        return _parse_text(joined) if joined else None
+    return None
+
+
+def _extract_error_message(response: Any, result: dict[str, Any] | None) -> str | None:
+    """Достаёт текст ошибки из PubChem-style payload `{ok: false, error: ...}`."""
+    if not isinstance(result, dict):
+        return None
+    if getattr(response, "status", None) != "error" and result.get("ok") is not False:
+        return None
+    payload = result.get("error") or result.get("message")
+    if isinstance(payload, dict):
+        return payload.get("message")
+    if isinstance(payload, str):
+        return payload
+    return None
+
 
 def _build_duplicate_tool_call_guard() -> Any:
+    """Блокирует повторный tool-call с теми же args в рамках одного run'а.
 
-    """The mechanism intercepts tool calls and checks whether an identical call (name + arguments) has been executed previously.
-        If a duplicate is detected, tool execution is blocked,
-        and the agent is instructed to use the results of the previous call.
-        Returns:
-        Callable: Middleware-функция для LangChain агента.
-        """
+    Сравнивает (name, args) по JSON-сериализации. На повтор отдаёт ToolMessage
+    с `ok=False, code=DUPLICATE_TOOL_CALL` — это сигнал агенту "используй
+    предыдущий результат, а не дергай API снова".
+    """
     seen_signatures: set[str] = set()
 
     @wrap_tool_call(name="deduplicate_pubchem_tool_calls")
     async def deduplicate_pubchem_tool_calls(request, handler):  # noqa: ANN001
         signature = json.dumps(
-            {
-                "name": request.tool_call["name"],
-                "args": request.tool_call.get("args", {}),
-            },
+            {"name": request.tool_call["name"], "args": request.tool_call.get("args", {})},
             ensure_ascii=False,
             sort_keys=True,
             default=str,
@@ -153,22 +165,25 @@ def _build_duplicate_tool_call_guard() -> Any:
                         "ok": False,
                         "error": {
                             "code": "DUPLICATE_TOOL_CALL",
-                            "message": "The same PubChem tool call was already executed in this run. Reuse the previous result or answer the user directly.",
+                            "message": (
+                                "The same PubChem tool call was already executed in this run. "
+                                "Reuse the previous result or answer the user directly."
+                            ),
                             "retriable": False,
                             "details": None,
                         },
                     },
                     ensure_ascii=False,
                 ),
-                name = request.tool_call["name"],
-                tool_call_id = request.tool_call["id"],
-                status = "error",
+                name=request.tool_call["name"],
+                tool_call_id=request.tool_call["id"],
+                status="error",
             )
-
         seen_signatures.add(signature)
         return await handler(request)
 
     return deduplicate_pubchem_tool_calls
+
 
 @asynccontextmanager
 async def prepare_agent_runtime(
@@ -177,86 +192,77 @@ async def prepare_agent_runtime(
     mcp_client: MultiServerMCPClient,
     provider: LLMProviderName | None = None,
     session_id: str | None = None,
-): #-> PreparedAgentRuntime:
-    """
-    Initializes and assembles the AI ​​agent's runtime environment, configuring connections to MCP servers, language model (LLM) parameters, 
-    loop protection, and tracing configuration. This is the central hub that transforms disparate components into a ready-to-run agent instance.
-    Args: 
-        settings (Settings): A global application settings object containing agent step limits, API connection parameters, provider keys, and paths to MCP scripts.
+):
+    """Открывает MCP-сессию и собирает готовый к запуску LangGraph-агент.
 
-        trace_id (str): A unique trace session identifier used for monitoring agent operation and debugging call chains in LangSmith or other logging systems.
-    
-    Return:
+    Args:
+        settings: глобальная конфигурация (timeouts, ключи, agent_max_steps).
+        trace_id: уникальный per-request id для observability (Langfuse).
+        mcp_client: singleton MCP-клиент (создаётся в container.py).
+        provider: явный выбор LLM-провайдера; None = settings.llm_default_provider.
+        session_id: стабильный per-conversation id для LangGraph thread_id
+            (чтобы checkpointer подхватил историю). None → fallback на trace_id,
+            тогда память живёт только в рамках одного запроса.
 
-    PreparedAgentRuntime: A data class (container) containing:
-
-        agent: A constructed agent object with attached MCP tools.
-        recorder: A tool for recording execution logs.
-        invoke_config: Invocation settings (recursion limits, callback functions).
-        provider/model_name: Metadata about the neural network used.
-        tracing: Configuration for the monitoring system. 
+    Yields:
+        PreparedAgentRuntime — агент + recorder + invoke_config.
     """
     async with mcp_client.session("pubchem") as session:
+        mcp_tools = await load_mcp_tools(session)
+        resolved_model = build_chat_model(settings, provider=provider)
+        recorder = ToolTraceRecorder()
 
-      mcp_tools = await load_mcp_tools(session)
-      resolved_model = build_chat_model(settings, provider=provider)
-      recorder = ToolTraceRecorder()
+        middleware = [
+            _build_tool_trace_recorder_middleware(recorder),
+            _build_duplicate_tool_call_guard(),
+            ToolCallLimitMiddleware(run_limit=max(5, settings.agent_max_steps)),
+            # 60k токенов ≈ половина floor'а 128k (NVIDIA Llama 3.3 70B).
+            # При превышении старые ToolMessages дропаются ПЕРЕД LLM-call;
+            # checkpointer хранит полную историю, LLM видит trim'нутый view.
+            ContextEditingMiddleware(
+                edits=[ClearToolUsesEdit(trigger=60_000, keep=5)],
+            ),
+        ]
 
-      middleware = [
-        _build_tool_trace_recorder_middleware(recorder),
-        _build_duplicate_tool_call_guard(),
-        ToolCallLimitMiddleware(run_limit=max(5, settings.agent_max_steps)),
-        # Старые PubChem ToolMessages дропаются перед LLM, checkpointed state не меняется.
-        # 60k ≈ половина floor'а 128k (NVIDIA Llama 3.3 70B); keep — последние 5 tool результатов.
-        ContextEditingMiddleware(
-            edits=[ClearToolUsesEdit(trigger=60_000, keep=5)],
-        ),
-    ]
+        tracing = build_langchain_tracing_config(
+            settings,
+            trace_id=trace_id,
+            provider=resolved_model.provider,
+        )
 
-      tracing = build_langchain_tracing_config(
-        settings,
-        trace_id=trace_id,
-        provider=resolved_model.provider,
-    )
+        # Singleton checkpointer: AsyncPostgresSaver если задан
+        # AGENT_CHECKPOINT_POSTGRES_URL, иначе InMemorySaver.
+        checkpointer = await get_checkpointer(settings)
 
-      # Singleton checkpointer для conversation memory (LangGraph state per thread_id).
-      # AsyncPostgresSaver если задан AGENT_CHECKPOINT_POSTGRES_URL, иначе InMemorySaver.
-      checkpointer = await get_checkpointer(settings)
+        agent = create_agent(
+            model=resolved_model.instance,
+            tools=mcp_tools,
+            system_prompt=SYSTEM_PROMPT,
+            middleware=middleware,
+            checkpointer=checkpointer,
+        )
 
-      agent = create_agent(
-        model=resolved_model.instance,
-        tools=mcp_tools,
-        system_prompt=SYSTEM_PROMPT,
-        middleware=middleware,
-        checkpointer=checkpointer,
-    )
+        # thread_id ДОЛЖЕН быть стабильным per-conversation, чтобы checkpointer
+        # подтянул историю. session_id (Chainlit chat_id или X-Session-Id header)
+        # живёт весь чат; trace_id — короткий per-request, для observability.
+        conversation_thread_id = session_id or trace_id
 
-      # thread_id ОБЯЗАН быть стабильным per-conversation, чтобы checkpointer
-      # подтянул историю диалога. session_id (из chainlit user_session) живёт
-      # всю сессию чата; trace_id — короткоживущий per-request, для observability.
-      # Fallback на trace_id оставлен на случай если caller не пробросил session_id
-      # (тогда memory работает только в рамках одного запроса).
-      conversation_thread_id = session_id or trace_id
+        invoke_config: dict[str, Any] = {
+            "recursion_limit": max(8, settings.agent_max_steps * 2 + 2),
+            "metadata": tracing.metadata,
+            "max_concurrency": 1,
+            "configurable": {"thread_id": conversation_thread_id},
+        }
+        if tracing.callbacks:
+            invoke_config["callbacks"] = tracing.callbacks
+            logger.debug("Langfuse callbacks подключены к invoke_config")
 
-      invoke_config: dict[str, Any] = {
-        "recursion_limit": max(8, settings.agent_max_steps * 2 + 2),
-        "metadata": tracing.metadata,
-        "max_concurrency": 1,
-        "configurable": {
-        "thread_id": conversation_thread_id,
-    }
-    }
-    
-      if tracing.callbacks:
-        invoke_config["callbacks"] = tracing.callbacks
-        logger.info(" callbacks переданы langfuse")
-
-      yield PreparedAgentRuntime(
-        agent = agent,
-        recorder = recorder,
-        invoke_config = invoke_config,
-        provider = resolved_model.provider,
-        model_name = resolved_model.model_name,
-        tracing = tracing,
-        mcp_client=mcp_client
-    )
+        yield PreparedAgentRuntime(
+            agent=agent,
+            recorder=recorder,
+            invoke_config=invoke_config,
+            provider=resolved_model.provider,
+            model_name=resolved_model.model_name,
+            tracing=tracing,
+            mcp_client=mcp_client,
+        )

@@ -101,7 +101,7 @@ def create_app(container_override: AppContainer | None = None) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        print(f"VALIDATION DEBUG: {exc.errors()}")
+        logging.getLogger(__name__).warning("Validation error: %s", exc.errors())
 
         app_error = AppError(
             ErrorCode.VALIDATION_ERROR,

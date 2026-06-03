@@ -242,7 +242,7 @@ def build_langchain_tracing_config(
 ) -> LangChainTracingConfig:
     
     """Builds a tracing configuration adapted for MCP. Adds architecture tags for filtering in Langfuse."""
-    print("Вход в build_langchain_tracing_config")
+    logger.debug("build_langchain_tracing_config: trace_id=%s provider=%s", trace_id, provider)
     metadata = {
         "langfuse_tags": ["pubchem-agent","mcp-architecture", provider],
         "agent_provider": provider,

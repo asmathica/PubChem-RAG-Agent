@@ -41,9 +41,9 @@ class AppContainer:
 
         try:
             await self.transport.close()
-            logging.info("PubChem transport closed.")
+            logger.info("PubChem transport closed.")
         except Exception as e:
-            logging.error(f"Error closing transport: {e}")
+            logger.error("Error closing transport: %s", e)
 
 
 def build_container(settings: Settings | None = None) -> AppContainer:

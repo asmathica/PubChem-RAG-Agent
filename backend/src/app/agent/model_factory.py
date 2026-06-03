@@ -173,8 +173,7 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
             - Техническое имя модели.
             - Настроенный инстанс модели (Runnable), готовый к вызову в LangChain.
     """
-    print("!!! ШАГ 1: Входим в build_chat_model")
-    print(f"!!! ШАГ 2: Провайдер {provider}")
+    logger.debug("build_chat_model: provider=%s", provider)
     resolved_provider, model_name = resolve_provider_model_name(settings, provider)
     model_kwargs = {"parallel_tool_calls": False}
 
@@ -255,13 +254,9 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
                     fallback_models.append(f"openrouter:{settings.openrouter_model}")
                 if nvidia_fallback is not None:
                     fallback_models.append(f"nvidia:{settings.nvidia_model}")
-                msg = f"!!! FAILOVER: Gemini chat model wired with fallbacks → {', '.join(fallback_models)}"
-                print(msg)  # also goes to uvicorn stdout
-                logger.info(msg)
+                logger.info("FAILOVER: Gemini wired with fallbacks → %s", ", ".join(fallback_models))
             else:
-                msg = "!!! FAILOVER: no fallbacks configured — Gemini runs alone."
-                print(msg)
-                logger.info(msg)
+                logger.info("FAILOVER: no fallbacks configured — Gemini runs alone.")
 
         instance = composed.with_config(RunnableConfig(max_concurrency=1))
 
@@ -325,9 +320,7 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
                     fallback_models.append(f"openrouter:{settings.openrouter_model}")
                 if settings.google_api_key is not None:
                     fallback_models.append(f"gemini:{settings.gemini_model}")
-                msg = f"!!! FAILOVER: NVIDIA chat model wired with fallbacks → {', '.join(fallback_models)}"
-                print(msg)
-                logger.info(msg)
+                logger.info("FAILOVER: NVIDIA wired with fallbacks → %s", ", ".join(fallback_models))
         return ResolvedChatModel(
             provider="nvidia",
             model_name=model_name,
@@ -377,9 +370,7 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
                     fallback_models.append(f"openrouter:{settings.openrouter_model}")
                 if nvidia_fallback is not None:
                     fallback_models.append(f"nvidia:{settings.nvidia_model}")
-                msg = f"!!! FAILOVER: Mistral chat model wired with fallbacks → {', '.join(fallback_models)}"
-                print(msg)
-                logger.info(msg)
+                logger.info("FAILOVER: Mistral wired with fallbacks → %s", ", ".join(fallback_models))
         return ResolvedChatModel(
             provider="mistral",
             model_name=model_name,
@@ -387,7 +378,6 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
         )
 
     if resolved_provider == "modal_glm":
-        print("!!! ШАГ 3: Создаем ChatOpenAI")
         if settings.modal_glm_api_key is None:
             raise AppError(
                 ErrorCode.LLM_NOT_CONFIGURED,
