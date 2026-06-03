@@ -31,14 +31,17 @@ from app.schemas.common import CompoundMatchCard, CompoundOverview, WarningMessa
 from app.schemas.query import QueryRequest
 
 # Маппинг MCP-tool name → input_mode для реконструкции `parsed_query`.
-# Используется также из query_service.py (мы единственный его владелец).
+# Имена СИНХРОНИЗИРОВАНЫ с реальными MCP tools (app/agent/mcp_tools/*).
+# Раньше тут были устаревшие имена `search_by_name_pubchem` и т.п. — после
+# переименования tools на стороне Арины этот маппинг остался pre-existing
+# broken: input_mode никогда не заполнялся, explanation был пустым.
 MCP_LOOKUP_MAP = {
-    "search_by_name_pubchem": "name",
-    "search_by_smiles_pubchem": "smiles",
-    "get_by_cid": "cid",
-    "search_by_formula_pubchem": "formula",
+    "search_compound_by_name": "name",
+    "search_compound_by_smiles": "smiles",
+    "search_compound_by_formula": "formula",
     "search_compound_by_inchikey": "inchikey",
-    "search_similar_mol_pubchem": "smiles_similar",
+    "search_by_similar_mol_pubchem": "smiles_similar",
+    "search_substructure_pubchem": "smiles_substructure",
 }
 
 # Placeholder из _fallback_answer — выносим в константу чтобы сравнивать
