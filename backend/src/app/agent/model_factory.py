@@ -1,10 +1,33 @@
-from dataclasses import dataclass
-import logging
+"""
+Фабрика LLM-моделей с прозрачным fallback chain.
 
-from langchain_openai import ChatOpenAI
-from langchain_ollama import ChatOllama
+Что делает:
+1. По провайдеру (primary) собирает raw ChatModel.
+2. Если включён `llm_enable_fallback` — оборачивает его в
+   `with_fallbacks(...)` с цепочкой остальных доступных провайдеров.
+3. На самом верху — `with_config(max_concurrency=1)`, чтобы агент делал
+   не больше одного LLM-call за раз.
+
+Важный порядок:
+   primary.with_fallbacks([fallbacks]).with_config(...)
+а НЕ
+   primary.with_config(...).with_fallbacks([fallbacks])
+— во втором случае LangChain видит сверху `RunnableBinding` и тихо
+пропускает fallback-путь.
+"""
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
+
 from app.agent.rate_limiters import (
     get_gemini_rate_limiter,
     get_mistral_rate_limiter,
@@ -14,20 +37,25 @@ from app.agent.rate_limiters import (
 from app.config import Settings
 from app.errors.models import AppError, ErrorCode
 from app.schemas.agent import LLMProviderName
-from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
 
 
-def _build_openrouter_chat_model(settings: Settings) -> ChatOpenAI | None:
-    """Raw OpenRouter ChatOpenAI client (no `with_config` — see docstring of
-    _build_nvidia_chat_model for the reason).
+@dataclass
+class ResolvedChatModel:
+    """Готовая к использованию LLM + метаданные про provider/model."""
+    provider: LLMProviderName
+    model_name: str
+    instance: BaseChatModel
 
-    Uses `llm_fallback_max_retries` instead of `max_retries`: when this model
-    is hit it's already because the primary failed N times, so retrying the
-    next provider another N times wastes user time. 1 try is enough to
-    decide whether to advance to the next fallback.
-    """
+
+# ─── raw factory functions ─────────────────────────────────────────────────
+# Все возвращают bare ChatModel БЕЗ with_config (чтобы caller мог обернуть
+# в with_fallbacks). retries=fallback_max — потому что fallback-слот должен
+# advance'нуть к следующему провайдеру быстро, не долбить тот же endpoint.
+
+
+def _build_openrouter(settings: Settings, *, retries: int) -> ChatOpenAI | None:
     if settings.openrouter_api_key is None:
         return None
     return ChatOpenAI(
@@ -35,7 +63,7 @@ def _build_openrouter_chat_model(settings: Settings) -> ChatOpenAI | None:
         api_key=settings.openrouter_api_key.get_secret_value(),
         base_url=settings.openrouter_base_url,
         timeout=settings.llm_request_timeout_seconds,
-        max_retries=settings.llm_fallback_max_retries,
+        max_retries=retries,
         rate_limiter=get_openrouter_rate_limiter(settings),
         temperature=0,
         use_responses_api=False,
@@ -46,17 +74,7 @@ def _build_openrouter_chat_model(settings: Settings) -> ChatOpenAI | None:
     )
 
 
-def _build_mistral_chat_model(settings: Settings) -> ChatOpenAI | None:
-    """Raw Mistral La Plateforme ChatOpenAI client when the API key is
-    configured.
-
-    Returns the bare ChatOpenAI (NOT wrapped in `with_config`) so callers
-    can compose it inside a fallback chain (see _build_nvidia_chat_model
-    for the wrapping-order rationale). Uses `llm_fallback_max_retries`
-    because this builder is only ever called from a fallback slot — when
-    Mistral is the explicit primary, the direct-provider branch wraps
-    the same factory.
-    """
+def _build_mistral(settings: Settings, *, retries: int) -> ChatOpenAI | None:
     if settings.mistral_api_key is None:
         return None
     return ChatOpenAI(
@@ -64,32 +82,18 @@ def _build_mistral_chat_model(settings: Settings) -> ChatOpenAI | None:
         api_key=settings.mistral_api_key.get_secret_value(),
         base_url=settings.mistral_base_url,
         timeout=settings.llm_request_timeout_seconds,
-        max_retries=settings.llm_fallback_max_retries,
+        max_retries=retries,
         rate_limiter=get_mistral_rate_limiter(settings),
         temperature=0,
         use_responses_api=False,
     )
 
 
-def _build_nvidia_chat_model(settings: Settings) -> ChatOpenAI | None:
-    """Raw NVIDIA NIM ChatOpenAI client when the API key is configured.
-
-    Returns the bare ChatOpenAI (NOT wrapped in `with_config`) so callers
-    can compose it with `with_fallbacks(...)` first and apply `with_config`
-    to the OUTSIDE of the fallback chain. Reversing the order makes
-    LangChain see a `RunnableBinding` at the top, which silently skips
-    the fallback path on errors.
-
-    Uses `llm_fallback_max_retries` (same reason as
-    `_build_openrouter_chat_model`).
-    """
+def _build_nvidia(settings: Settings, *, retries: int) -> ChatOpenAI | None:
     if settings.nvidia_api_key is None:
         return None
     extra_body: dict[str, object] | None = None
-    # GLM models on NVIDIA NIM expose a "thinking" mode via chat_template_kwargs.
-    # Enabling it makes the model emit reasoning_content blocks alongside the
-    # normal content; LangChain agents handle that fine and the extra detail
-    # helps with multi-step PubChem lookups.
+    # GLM-модели на NVIDIA NIM поддерживают "thinking" mode через chat_template_kwargs.
     if "glm" in settings.nvidia_model.lower():
         extra_body = {"chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}}
     return ChatOpenAI(
@@ -97,319 +101,195 @@ def _build_nvidia_chat_model(settings: Settings) -> ChatOpenAI | None:
         api_key=settings.nvidia_api_key.get_secret_value(),
         base_url=settings.nvidia_base_url,
         timeout=settings.llm_request_timeout_seconds,
-        max_retries=settings.llm_fallback_max_retries,
+        max_retries=retries,
         rate_limiter=get_nvidia_rate_limiter(settings),
         temperature=0,
         use_responses_api=False,
         extra_body=extra_body,
     )
 
-@dataclass
-class ResolvedChatModel:
-    provider: LLMProviderName
-    model_name: str
-    instance: ChatOpenAI
+
+def _build_gemini(settings: Settings, *, retries: int) -> ChatGoogleGenerativeAI | None:
+    if settings.google_api_key is None:
+        return None
+    return ChatGoogleGenerativeAI(
+        model=settings.gemini_model,
+        google_api_key=settings.google_api_key.get_secret_value(),
+        temperature=0,
+        timeout=settings.llm_request_timeout_seconds,
+        max_retries=retries,
+        rate_limiter=get_gemini_rate_limiter(settings),
+    )
 
 
-def resolve_provider_model_name(settings: Settings, provider: LLMProviderName | None = None) -> tuple[LLMProviderName, str]:
-    """Определяет итогового провайдера и имя модели для инициализации LLM.
-    Функция реализует логику приоритетов: если провайдер передан явно, используется он; 
-    в противном случае берется провайдер по умолчанию из настроек. На основе выбранного 
-    провайдера извлекается соответствующее имя модели или базовый URL.
-    Args:
-        settings (Settings): Объект конфигурации приложения, содержащий ключи и имена моделей.
-        provider (LLMProviderName | None, optional): Желаемый провайдер. Если None, 
-            используется `settings.llm_default_provider`.
-    Returns:
-        tuple[LLMProviderName, str]: Кортеж, состоящий из:
-            1. Итогового имени провайдера (например, "openai", "ollama").
-            2. Технического идентификатора модели или URL (например, "gpt-4o" или адрес сервера).
+def _build_openai(settings: Settings, *, retries: int) -> ChatOpenAI | None:
+    if settings.openai_api_key is None:
+        return None
+    return ChatOpenAI(
+        model=settings.openai_model,
+        api_key=settings.openai_api_key.get_secret_value(),
+        base_url=settings.openai_base_url,
+        timeout=settings.llm_request_timeout_seconds,
+        max_retries=retries,
+        temperature=0,
+        model_kwargs={"parallel_tool_calls": False},
+        use_responses_api=False,
+    )
 
+
+def _build_modal_glm(settings: Settings, *, retries: int) -> ChatOpenAI | None:
+    if settings.modal_glm_api_key is None:
+        return None
+    extra_body: dict[str, object] | None = None
+    if settings.modal_glm_disable_thinking:
+        extra_body = {"thinking": {"type": "disabled"}}
+    return ChatOpenAI(
+        model=settings.modal_glm_model,
+        api_key=settings.modal_glm_api_key.get_secret_value(),
+        base_url=settings.modal_glm_base_url,
+        timeout=settings.llm_request_timeout_seconds,
+        max_retries=retries,
+        temperature=0,
+        model_kwargs={"parallel_tool_calls": False},
+        extra_body=extra_body,
+        use_responses_api=False,
+    )
+
+
+def _build_ollama(settings: Settings, *, retries: int) -> ChatOllama:
+    """Ollama локальная — ключи не нужны, всегда строится."""
+    return ChatOllama(
+        model=settings.base_llm_model,
+        base_url=settings.ollama_base_url or "http://localhost:11434",
+        temperature=0,
+        num_predict=1000,
+    )
+
+
+# Реестр всех factory'ев. Используется как для primary, так и для fallback'ов.
+_BuilderFn = Callable[..., BaseChatModel | None]
+_PROVIDER_BUILDERS: dict[LLMProviderName, _BuilderFn] = {
+    "openrouter": _build_openrouter,
+    "mistral": _build_mistral,
+    "nvidia": _build_nvidia,
+    "gemini": _build_gemini,
+    "openai": _build_openai,
+    "modal_glm": _build_modal_glm,
+    "ollama": _build_ollama,
+}
+
+# Имя модели для каждого провайдера (для resolve_provider_model_name).
+_PROVIDER_MODEL_ATTR: dict[LLMProviderName, str] = {
+    "openai": "openai_model",
+    "ollama": "ollama_base_url",  # для Ollama "имя модели" = base URL
+    "gemini": "gemini_model",
+    "openrouter": "openrouter_model",
+    "nvidia": "nvidia_model",
+    "mistral": "mistral_model",
+    "modal_glm": "modal_glm_model",
+}
+
+# Порядок fallback-цепочки для каждого primary.
+# Идея: ставить рядом архитектурно похожие провайдеры (Mistral → Gemini/Gemma),
+# самые тяжёлые (NVIDIA Llama 3.3 70B) — в конец как last resort.
+_FALLBACK_ORDER: dict[LLMProviderName, tuple[LLMProviderName, ...]] = {
+    "mistral":     ("gemini", "openrouter", "nvidia"),
+    "gemini":      ("openrouter", "nvidia"),
+    "nvidia":      ("mistral", "openrouter", "gemini"),
+    "openrouter":  (),  # один путь
+    "openai":      (),
+    "modal_glm":   (),
+    "ollama":      (),
+}
+
+
+# ─── public API ────────────────────────────────────────────────────────────
+
+
+def resolve_provider_model_name(
+    settings: Settings,
+    provider: LLMProviderName | None = None,
+) -> tuple[LLMProviderName, str]:
+    """Определяет финального провайдера и имя/URL модели для logger/Langfuse.
+
+    Если `provider` явно не передан — берём `settings.llm_default_provider`.
+    Raise'ит AppError если provider не из whitelist'а.
     """
-    resolved_provider = provider or settings.llm_default_provider
-
-    if resolved_provider not in {"openai", "modal_glm", "ollama", "gemini", "openrouter", "nvidia", "mistral"}:
+    resolved = provider or settings.llm_default_provider  # type: ignore[assignment]
+    if resolved not in _PROVIDER_MODEL_ATTR:
         raise AppError(
             ErrorCode.VALIDATION_ERROR,
-            f"Неизвестный LLM provider: '{resolved_provider}'.",
+            f"Неизвестный LLM provider: '{resolved}'.",
             http_status=400,
         )
-    if resolved_provider == "openai":
-        return "openai", settings.openai_model
-
-    if resolved_provider == "ollama":
-        return "ollama", settings.ollama_base_url
-
-    if resolved_provider == "gemini":
-        return "gemini", settings.gemini_model
-
-    if resolved_provider == "openrouter":
-        return "openrouter", settings.openrouter_model
-
-    if resolved_provider == "nvidia":
-        return "nvidia", settings.nvidia_model
-
-    if resolved_provider == "mistral":
-        return "mistral", settings.mistral_model
-
-    return "modal_glm", settings.modal_glm_model
+    return resolved, getattr(settings, _PROVIDER_MODEL_ATTR[resolved])
 
 
-def build_chat_model(settings: Settings, provider: LLMProviderName | None = None) -> ResolvedChatModel:
-    """
-    Функция выполняет роль фабрики: она определяет провайдера, проверяет наличие необходимых 
-    API-ключей и создает объект ChatModel с предустановленными параметрами (температура, 
-    таймауты, лимиты конкурентности). Поддерживает интеграцию с OpenAI, Ollama и кастомными 
-    сервисами через интерфейс ChatOpenAI (например, Modal GLM).
+def build_chat_model(
+    settings: Settings,
+    provider: LLMProviderName | None = None,
+) -> ResolvedChatModel:
+    """Собирает primary + fallback chain + with_config в один Runnable.
 
-    Args:
-        settings (Settings): Глобальный объект конфигурации приложения.
-        provider (LLMProviderName | None, optional): Принудительный выбор провайдера. 
-            Если не указан, используется значение по умолчанию из настроек.
-
-    Returns:
-        ResolvedChatModel: Контейнер, содержащий:
-            - Имя провайдера.
-            - Техническое имя модели.
-            - Настроенный инстанс модели (Runnable), готовый к вызову в LangChain.
+    1. resolve provider.
+    2. собрать primary (полные `max_retries`).
+    3. если включён fallback — добавить остальных доступных провайдеров
+       (с `llm_fallback_max_retries`, чтобы не залипать на одном).
+    4. обернуть в with_config(max_concurrency=1).
     """
     logger.debug("build_chat_model: provider=%s", provider)
     resolved_provider, model_name = resolve_provider_model_name(settings, provider)
-    model_kwargs = {"parallel_tool_calls": False}
 
-#логика выбора провайдера
-    if resolved_provider == "openai":
-        if settings.openai_api_key is None:
-            raise AppError(
-                ErrorCode.LLM_NOT_CONFIGURED,
-                "OPENAI_API_KEY не настроен.",
-                http_status=500,
-            )
-        instance = ChatOpenAI(
-            model=model_name,
-            api_key=settings.openai_api_key.get_secret_value(),
-            base_url=settings.openai_base_url,
-            timeout=settings.llm_request_timeout_seconds,
-            max_retries=settings.max_retries,
-            temperature=0,
-            model_kwargs=model_kwargs,
-            use_responses_api=False,
-        )
-        return ResolvedChatModel(provider="openai", 
-                                 model_name=model_name, 
-                                 instance=instance.with_config(RunnableConfig(max_concurrency=1)))
-    if resolved_provider == "ollama":
-        ollama_url = settings.ollama_base_url or "http://localhost:11434"
-        instance = ChatOllama(
-            model=settings.base_llm_model, 
-            base_url=ollama_url,
-            temperature=0,
-            num_predict=1000,
+    primary_builder = _PROVIDER_BUILDERS[resolved_provider]
+    primary = primary_builder(settings, retries=settings.max_retries)
+    if primary is None:
+        raise AppError(
+            ErrorCode.LLM_NOT_CONFIGURED,
+            f"Ключ для провайдера '{resolved_provider}' не настроен в .env.",
+            http_status=500,
         )
 
-        return ResolvedChatModel(
-            provider="ollama",
-            model_name=settings.base_llm_model,
-            instance=instance.with_config(RunnableConfig(max_concurrency=1))
-        )
+    composed: BaseChatModel = primary
+    if settings.llm_enable_fallback:
+        composed = _wire_fallbacks(primary, resolved_provider, settings)
 
-    if resolved_provider == "gemini":
-        if settings.google_api_key is None:
-            raise AppError(
-                ErrorCode.LLM_NOT_CONFIGURED,
-                "GOOGLE_API_KEY не настроен.",
-                http_status=500,
-            )
-        # Build the raw chat models WITHOUT `with_config` first. Compose
-        # `with_fallbacks` INSIDE, then apply `with_config` to the combined
-        # runnable. Reversing the order makes LangChain see a RunnableBinding
-        # at the top, which silently skips the fallback path on errors.
-        primary = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=settings.google_api_key.get_secret_value(),
-            temperature=0,
-            timeout=settings.llm_request_timeout_seconds,
-            max_retries=settings.max_retries,
-            rate_limiter=get_gemini_rate_limiter(settings),
-        )
-
-        # Прозрачный auto-failover: если Gemini вернул любую ошибку
-        # (FAILED_PRECONDITION region, RESOURCE_EXHAUSTED quota, 5xx и т.п.) —
-        # LangChain сам повторяет запрос через цепочку OpenRouter → NVIDIA.
-        # Никакого state, никакого ручного try/except в верхних слоях.
-        # См. docs: https://python.langchain.com/docs/how_to/fallbacks/
-        composed: object = primary
-        if settings.llm_enable_fallback:
-            fallback_chain: list[object] = []
-            openrouter_fallback = _build_openrouter_chat_model(settings)
-            if openrouter_fallback is not None:
-                fallback_chain.append(openrouter_fallback)
-            nvidia_fallback = _build_nvidia_chat_model(settings)
-            if nvidia_fallback is not None:
-                fallback_chain.append(nvidia_fallback)
-            if fallback_chain:
-                composed = primary.with_fallbacks(fallback_chain)
-                fallback_models = []
-                if openrouter_fallback is not None:
-                    fallback_models.append(f"openrouter:{settings.openrouter_model}")
-                if nvidia_fallback is not None:
-                    fallback_models.append(f"nvidia:{settings.nvidia_model}")
-                logger.info("FAILOVER: Gemini wired with fallbacks → %s", ", ".join(fallback_models))
-            else:
-                logger.info("FAILOVER: no fallbacks configured — Gemini runs alone.")
-
-        instance = composed.with_config(RunnableConfig(max_concurrency=1))
-
-        return ResolvedChatModel(
-            provider="gemini",
-            model_name=model_name,
-            instance=instance,
-        )
-
-    if resolved_provider == "openrouter":
-        raw = _build_openrouter_chat_model(settings)
-        if raw is None:
-            raise AppError(
-                ErrorCode.LLM_NOT_CONFIGURED,
-                "OPENROUTER_API_KEY не настроен.",
-                http_status=500,
-            )
-        return ResolvedChatModel(
-            provider="openrouter",
-            model_name=model_name,
-            instance=raw.with_config(RunnableConfig(max_concurrency=1)),
-        )
-
-    if resolved_provider == "nvidia":
-        raw = _build_nvidia_chat_model(settings)
-        if raw is None:
-            raise AppError(
-                ErrorCode.LLM_NOT_CONFIGURED,
-                "NVIDIA_API_KEY не настроен.",
-                http_status=500,
-            )
-        # Symmetric failover. Order matches the user-requested cascade
-        # NVIDIA NIM → Mistral → OpenRouter → Gemini, sized by free-tier
-        # generosity: Mistral has the most headroom (60 RPM, 1B/month),
-        # OpenRouter is the smallest pool, Gemini is the last resort.
-        composed: object = raw
-        if settings.llm_enable_fallback:
-            fallback_chain: list[object] = []
-            mistral_fallback = _build_mistral_chat_model(settings)
-            if mistral_fallback is not None:
-                fallback_chain.append(mistral_fallback)
-            openrouter_fallback = _build_openrouter_chat_model(settings)
-            if openrouter_fallback is not None:
-                fallback_chain.append(openrouter_fallback)
-            if settings.google_api_key is not None:
-                gemini_fallback = ChatGoogleGenerativeAI(
-                    model=settings.gemini_model,
-                    google_api_key=settings.google_api_key.get_secret_value(),
-                    temperature=0,
-                    timeout=settings.llm_request_timeout_seconds,
-                    max_retries=settings.llm_fallback_max_retries,
-                    rate_limiter=get_gemini_rate_limiter(settings),
-                )
-                fallback_chain.append(gemini_fallback)
-            if fallback_chain:
-                composed = raw.with_fallbacks(fallback_chain)
-                fallback_models = []
-                if mistral_fallback is not None:
-                    fallback_models.append(f"mistral:{settings.mistral_model}")
-                if openrouter_fallback is not None:
-                    fallback_models.append(f"openrouter:{settings.openrouter_model}")
-                if settings.google_api_key is not None:
-                    fallback_models.append(f"gemini:{settings.gemini_model}")
-                logger.info("FAILOVER: NVIDIA wired with fallbacks → %s", ", ".join(fallback_models))
-        return ResolvedChatModel(
-            provider="nvidia",
-            model_name=model_name,
-            instance=composed.with_config(RunnableConfig(max_concurrency=1)),
-        )
-
-    if resolved_provider == "mistral":
-        raw = _build_mistral_chat_model(settings)
-        if raw is None:
-            raise AppError(
-                ErrorCode.LLM_NOT_CONFIGURED,
-                "MISTRAL_API_KEY не настроен.",
-                http_status=500,
-            )
-        # Mistral-primary failover (explicit user-requested order):
-        #   Mistral → Google Gemma → OpenRouter Gemma → NVIDIA Llama
-        # Idea: keep the two Google/Gemma-flavoured fallbacks adjacent so a
-        # Mistral hiccup tries the closest-in-architecture replacement
-        # first; NVIDIA Llama 3.3 70B is the heaviest and slowest option,
-        # so it sits last.
-        composed: object = raw
-        if settings.llm_enable_fallback:
-            fallback_chain: list[object] = []
-            gemini_fallback = None
-            if settings.google_api_key is not None:
-                gemini_fallback = ChatGoogleGenerativeAI(
-                    model=settings.gemini_model,
-                    google_api_key=settings.google_api_key.get_secret_value(),
-                    temperature=0,
-                    timeout=settings.llm_request_timeout_seconds,
-                    max_retries=settings.llm_fallback_max_retries,
-                    rate_limiter=get_gemini_rate_limiter(settings),
-                )
-                fallback_chain.append(gemini_fallback)
-            openrouter_fallback = _build_openrouter_chat_model(settings)
-            if openrouter_fallback is not None:
-                fallback_chain.append(openrouter_fallback)
-            nvidia_fallback = _build_nvidia_chat_model(settings)
-            if nvidia_fallback is not None:
-                fallback_chain.append(nvidia_fallback)
-            if fallback_chain:
-                composed = raw.with_fallbacks(fallback_chain)
-                fallback_models = []
-                if gemini_fallback is not None:
-                    fallback_models.append(f"gemini:{settings.gemini_model}")
-                if openrouter_fallback is not None:
-                    fallback_models.append(f"openrouter:{settings.openrouter_model}")
-                if nvidia_fallback is not None:
-                    fallback_models.append(f"nvidia:{settings.nvidia_model}")
-                logger.info("FAILOVER: Mistral wired with fallbacks → %s", ", ".join(fallback_models))
-        return ResolvedChatModel(
-            provider="mistral",
-            model_name=model_name,
-            instance=composed.with_config(RunnableConfig(max_concurrency=1)),
-        )
-
-    if resolved_provider == "modal_glm":
-        if settings.modal_glm_api_key is None:
-            raise AppError(
-                ErrorCode.LLM_NOT_CONFIGURED,
-                "MODAL_GLM_API_KEY не настроен.",
-                http_status=500,
-            )
-        # GLM-модели на Modal поддерживают "thinking" mode через extra_body;
-        # выключаем его если оператор поставил MODAL_GLM_DISABLE_THINKING=true.
-        extra_body: dict[str, object] | None = None
-        if settings.modal_glm_disable_thinking:
-            extra_body = {"thinking": {"type": "disabled"}}
-        instance = ChatOpenAI(
-            model=model_name,
-            api_key=settings.modal_glm_api_key.get_secret_value(),
-            base_url=settings.modal_glm_base_url,
-            timeout=settings.llm_request_timeout_seconds,
-            max_retries=settings.max_retries,
-            temperature=0,
-            model_kwargs=model_kwargs,
-            extra_body=extra_body,
-            use_responses_api=False,
-        )
-        return ResolvedChatModel(
-            provider="modal_glm",
-            model_name=model_name,
-            instance=instance.with_config(RunnableConfig(max_concurrency=1)),
-        )
-
-    # Если дошли сюда — `resolve_provider_model_name` уже отвалил бы провайдер,
-    # которого нет в whitelist. Этот raise — defensive, на случай рассинхрона.
-    raise AppError(
-        ErrorCode.LLM_NOT_CONFIGURED,
-        f"Не нашли реализацию для провайдера '{resolved_provider}'.",
-        http_status=500,
+    return ResolvedChatModel(
+        provider=resolved_provider,
+        model_name=model_name,
+        instance=composed.with_config(RunnableConfig(max_concurrency=1)),  # type: ignore[return-value]
     )
+
+
+def _wire_fallbacks(
+    primary: BaseChatModel,
+    primary_name: LLMProviderName,
+    settings: Settings,
+) -> BaseChatModel:
+    """Оборачивает primary в .with_fallbacks([...]) с цепочкой по _FALLBACK_ORDER.
+
+    Логирует какие именно fallback'и подключены, чтобы оператор видел в логах
+    реальную конфигурацию (не все ключи могут быть в .env — тогда часть отвалится).
+    """
+    candidates = _FALLBACK_ORDER.get(primary_name, ())
+    if not candidates:
+        return primary
+
+    chain: list[BaseChatModel] = []
+    labels: list[str] = []
+    retries = settings.llm_fallback_max_retries
+    for name in candidates:
+        builder = _PROVIDER_BUILDERS.get(name)
+        if builder is None:
+            continue
+        fallback = builder(settings, retries=retries)
+        if fallback is None:
+            continue  # ключ не настроен — пропускаем
+        chain.append(fallback)
+        labels.append(f"{name}:{getattr(settings, _PROVIDER_MODEL_ATTR[name])}")
+
+    if not chain:
+        logger.info("FAILOVER: %s runs alone (no fallback keys configured)", primary_name)
+        return primary
+
+    logger.info("FAILOVER: %s wired with fallbacks → %s", primary_name, ", ".join(labels))
+    return primary.with_fallbacks(chain)  # type: ignore[return-value]

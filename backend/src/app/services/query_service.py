@@ -5,7 +5,7 @@ from app.errors.models import AppError, ErrorCode
 from app.schemas.common import PresentationHints, WarningMessage, CompoundMatchCard, CompoundOverview
 from app.schemas.query import  QueryNormalizedPayload, QueryResponseEnvelope, ResolvedQuery, InputMode
 from app.schemas.query import QueryRequest
-from app.services.agent_service import MCP_LOOKUP_MAP 
+from app.services.envelope_builder import MCP_LOOKUP_MAP  # noqa: F401  — публичный re-export для возможных будущих consumer'ов
 import logging
 SUPPORTED_INPUT_MODES = {"cid", "name", "smiles", "inchikey", "formula"}
 SUPPORTED_OPERATIONS = {"property",
