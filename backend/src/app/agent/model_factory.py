@@ -215,7 +215,7 @@ def resolve_provider_model_name(
     Если `provider` явно не передан — берём `settings.llm_default_provider`.
     Raise'ит AppError если provider не из whitelist'а.
     """
-    resolved = provider or settings.llm_default_provider  # type: ignore[assignment]
+    resolved: LLMProviderName = provider or settings.llm_default_provider  # type: ignore[assignment]
     if resolved not in _PROVIDER_MODEL_ATTR:
         raise AppError(
             ErrorCode.VALIDATION_ERROR,

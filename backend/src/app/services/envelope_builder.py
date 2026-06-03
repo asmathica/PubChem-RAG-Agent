@@ -16,6 +16,7 @@ from collections import OrderedDict
 from typing import Any
 
 from langchain_core.messages import AIMessage
+from pydantic import ValidationError
 
 from app.agent.runtime import PreparedAgentRuntime
 from app.schemas.agent import (
@@ -40,23 +41,27 @@ MCP_LOOKUP_MAP = {
     "search_similar_mol_pubchem": "smiles_similar",
 }
 
+# Placeholder из _fallback_answer — выносим в константу чтобы сравнивать
+# через `==` (раньше было `.startswith(...)` по магической строке — хрупко).
+_NO_ANSWER_PLACEHOLDER = "Агент завершил работу, но не сформировал отдельный текстовый ответ."
+
 
 # ─── final_answer helpers ──────────────────────────────────────────────────
 
 
 def _fallback_answer(result: dict[str, Any]) -> str:
-    """Берёт последний непустой AIMessage из state. Если такого нет — заглушка."""
+    """Берёт последний непустой AIMessage из state. Если такого нет — placeholder."""
     for message in reversed(result.get("messages", [])):
         if isinstance(message, AIMessage) and isinstance(message.content, str):
             if message.content.strip():
                 return message.content.strip()
-    return "Агент завершил работу, но не сформировал отдельный текстовый ответ."
+    return _NO_ANSWER_PLACEHOLDER
 
 
 def _contains_cyrillic(text: str) -> bool:
-    """True если в строке есть кириллица — нужно чтобы fallback ответ был на языке запроса."""
-    lowered = text.casefold()
-    return any("а" <= char <= "я" or char == "ё" for char in lowered)
+    """True если в строке есть кириллица. Диапазон U+0400-U+04FF покрывает
+    все кириллические буквы (заглавные/строчные/ё), без необходимости casefold."""
+    return any("Ѐ" <= char <= "ӿ" for char in text)
 
 
 def _fallback_compound_answer(
@@ -148,16 +153,18 @@ def _infer_clarification(
     return needs_clarification, final_answer if needs_clarification else None
 
 
-# Шаблоны строк explanation, по input_mode и языку.
+# Шаблоны строк explanation, по input_mode и языку (ru, en).
 _EXPLANATION_TEMPLATES: dict[str, tuple[str, str]] = {
-    "name":    ("Запрос интерпретирован как поиск по названию: {id}.",
-                "The request was interpreted as a name search: {id}."),
-    "smiles":  ("Использована химическая структура (SMILES): {id}.",
-                "The chemical structure (SMILES) was used: {id}."),
-    "formula": ("Поиск выполнен по молекулярной формуле: {id}.",
-                "The search was performed by molecular formula: {id}."),
-    "cid":     ("Запрос выполнен по прямому идентификатору PubChem CID: {id}.",
-                "The query was executed by direct PubChem CID: {id}."),
+    "name":     ("Запрос интерпретирован как поиск по названию: {id}.",
+                 "The request was interpreted as a name search: {id}."),
+    "smiles":   ("Использована химическая структура (SMILES): {id}.",
+                 "The chemical structure (SMILES) was used: {id}."),
+    "formula":  ("Поиск выполнен по молекулярной формуле: {id}.",
+                 "The search was performed by molecular formula: {id}."),
+    "cid":      ("Запрос выполнен по прямому идентификатору PubChem CID: {id}.",
+                 "The query was executed by direct PubChem CID: {id}."),
+    "inchikey": ("Поиск по InChIKey: {id}.",
+                 "Search by InChIKey: {id}."),
 }
 
 
@@ -253,7 +260,7 @@ def _collect_compounds(
             try:
                 validated = CompoundMatchCard.model_validate(match)
                 match_map.setdefault(validated.cid, validated)
-            except Exception:
+            except ValidationError:
                 continue
 
         # 2. Одиночный compound (CompoundOverview).
@@ -262,7 +269,7 @@ def _collect_compounds(
             try:
                 validated_overview = CompoundOverview.model_validate(compound)
                 compound_map.setdefault(validated_overview.cid, validated_overview)
-            except Exception:
+            except ValidationError:
                 pass
 
         # 3. Standalone CID на верхнем уровне (get_by_cid и подобные).
@@ -329,9 +336,10 @@ def build_agent_response_envelope(
     matches, compounds = _collect_compounds(tool_trace)
 
     final_answer = _fallback_answer(result)
-    if not final_answer or final_answer.startswith("Агент завершил работу"):
-        if matches or compounds:
-            final_answer = _fallback_compound_answer(request.text, matches, compounds)
+    # Если LLM не дал свой текст (placeholder), но в trace есть compound'ы —
+    # синтезируем короткий ответ из данных PubChem.
+    if final_answer == _NO_ANSWER_PLACEHOLDER and (matches or compounds):
+        final_answer = _fallback_compound_answer(request.text, matches, compounds)
 
     parsed_query = _infer_parsed_query(request.text, tool_trace)
     needs_clarification, clarification_question = _infer_clarification(

@@ -16,6 +16,7 @@ from app.errors.models import AppError
 from app.presenters.compound_card import (
     build_candidates_markdown,
     build_compound_card_props,
+    build_details_markdown,
     build_structure_image_url,
     build_tool_trace_markdown,
     extract_primary_synonyms,
@@ -89,72 +90,18 @@ def auth_callback(username: str, password: str) -> cl.User | None:
 
 
 def _humanize_runtime_error(exc: BaseException) -> str:
-    """Map noisy upstream / framework exceptions into a single short Russian
-    sentence the chat user can act on, instead of the generic
-    'Не удалось завершить запрос из-за внутренней ошибки приложения.'
+    """Короткое русское сообщение пользователю по типу исключения.
+
+    Использует normalize_agent_exception (тот же мэппер что в AgentService),
+    чтобы текст ошибки в Chainlit совпадал с тем что вернёт HTTP-роут.
     """
-    text = repr(exc)
-    if "RESOURCE_EXHAUSTED" in text or "429" in text:
-        return "Лимит запросов к LLM временно исчерпан — подождите минуту и повторите."
-    if "GraphRecursionError" in text or "Recursion limit" in text:
-        return "Агент сделал слишком много шагов. Сформулируйте запрос более конкретно или повторите."
-    if "ServerError" in text or "500 INTERNAL" in text or "503" in text or "INTERNAL" in text:
-        return "Языковая модель временно недоступна (5xx у провайдера). Попробуйте ещё раз через несколько секунд."
-    if "TimeoutError" in text or "Timeout" in text:
-        return "Запрос занял слишком много времени. Сократите формулировку или попробуйте позже."
+    from app.agent.error_mapper import normalize_agent_exception
+    if isinstance(exc, Exception):
+        try:
+            return normalize_agent_exception(exc).message
+        except Exception:  # на случай если mapper сам упал
+            pass
     return "Не удалось завершить запрос — попробуйте ещё раз. Если проблема повторится, проверьте логи бэкенда."
-
-
-def _build_details_markdown(response: AgentResponseEnvelope) -> str:
-    """Markdown for the right side panel.
-
-    The MCP search tools only return cid / title / formula / molecular_weight
-    today, so the rich-field block (IUPAC, SMILES, XLogP…) is almost always
-    empty. Without a fallback the panel ends up as a lonely "### Подробности"
-    header. Always emit the basics that ARE available, plus the trace and a
-    direct PubChem link, so the user has something useful to look at.
-    """
-    normalized = response.normalized
-    if normalized is None:
-        return "Подробные сведения недоступны."
-
-    primary = select_primary_compound(response)
-    if primary is None:
-        return build_tool_trace_markdown(response)
-
-    lines: list[str] = [f"### {primary.title or f'CID {primary.cid}'}"]
-
-    basics: list[str] = []
-    basics.append(f"- **PubChem CID:** {primary.cid}")
-    if primary.molecular_formula:
-        basics.append(f"- **Молекулярная формула:** `{primary.molecular_formula}`")
-    if primary.molecular_weight is not None:
-        basics.append(f"- **Молекулярная масса:** {primary.molecular_weight:.2f} г/моль")
-    if primary.iupac_name:
-        basics.append(f"- **IUPAC:** {primary.iupac_name}")
-    if primary.canonical_smiles:
-        basics.append(f"- **Canonical SMILES:** `{primary.canonical_smiles}`")
-    if primary.exact_mass is not None:
-        basics.append(f"- **Exact mass:** {primary.exact_mass:.4f}")
-    if primary.xlogp is not None:
-        basics.append(f"- **XLogP:** {primary.xlogp}")
-    # tpsa / complexity / hbond_* свойства MCP-tools пока не возвращают —
-    # включим обратно когда search_compound_by_* начнёт гидрировать их.
-    lines.extend(basics)
-
-    lines.append("")
-    lines.append(f"[Открыть на PubChem ↗](https://pubchem.ncbi.nlm.nih.gov/compound/{primary.cid})")
-
-    if primary.description:
-        lines.append("")
-        lines.append("#### Описание")
-        lines.append(primary.description)
-
-    if normalized.tool_trace:
-        lines.append("")
-        lines.append(build_tool_trace_markdown(response))
-
-    return "\n".join(lines)
 
 
 @cl.set_starters
@@ -265,7 +212,7 @@ async def on_chat_resume(thread: ThreadDict) -> None:
     _get_or_create_container()
     container = cl.user_session.get("container")
     metadata = thread.get("metadata") or {}
-    provider = metadata.get("agent_provider") or cast(AppContainer, container).settings.llm_default_provider
+    provider = metadata.get("agent_provider") or _resolve_session_provider(cast(AppContainer, container))
     cl.user_session.set("llm_provider", provider)
 
 
@@ -289,11 +236,50 @@ def _chainlit_metadata(session_id: str, provider: str) -> dict[str, str | list[s
     }
 
 
+def _resolve_session_provider(container: AppContainer) -> str:
+    """Provider текущей Chainlit-сессии: явный выбор из ⚙️ Settings или дефолт."""
+    return cast(str, cl.user_session.get("llm_provider") or container.settings.llm_default_provider)
+
+
+def _build_primary_compound_elements(
+    response: AgentResponseEnvelope,
+    primary,
+) -> tuple[list[cl.Element], list[cl.Element]]:
+    """Inline (CompoundCardV2) + sidebar (structure image + properties markdown) для primary compound."""
+    synonyms = extract_primary_synonyms(response, primary.cid)
+    inline = [
+        cl.CustomElement(
+            # V2 в имени — чтобы браузер не отдавал кэш старой /public/elements/CompoundCard.jsx;
+            # Chainlit 2.11 не делает version-hash в URL, перебить кеш можно только через имя.
+            name="CompoundCardV2",
+            props=build_compound_card_props(
+                primary,
+                explanation=response.normalized.explanation if response.normalized else None,
+                synonyms=synonyms,
+            ),
+            display="inline",
+        ),
+    ]
+    sidebar = [
+        cl.Image(
+            name=f"CID {primary.cid} structure",
+            url=build_structure_image_url(primary.cid),
+            display="side",
+        ),
+        cl.Text(
+            name="Свойства вещества",
+            content=build_details_markdown(response),
+            display="side",
+        ),
+    ]
+    return inline, sidebar
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     container = _get_or_create_container()
     session_id = _current_thread_id()
-    provider = cast(str, cl.user_session.get("llm_provider") or container.settings.llm_default_provider)
+    provider = _resolve_session_provider(container)
     trace_id = uuid.uuid4().hex
 
     request = AgentRequest(text=message.content, provider=provider, include_raw=True)
@@ -309,7 +295,6 @@ async def on_message(message: cl.Message) -> None:
 
     try:
         if is_capability_question(message.content):
-            # Capability questions — без cl.Step (ответ статичный, быстрый).
             response = await _execute()
         else:
             async with cl.Step(name="Поиск в PubChem") as step:
@@ -320,8 +305,6 @@ async def on_message(message: cl.Message) -> None:
         await cl.Message(content=error.message, author="PubChem Agent").send()
         return
     except Exception as exc:
-        # Раньше переменная называлась `message` и затирала параметр `message: cl.Message`,
-        # из-за чего ниже по коду `message.content` упало бы AttributeError.
         error_text = _humanize_runtime_error(exc)
         await cl.Message(content=error_text, author="PubChem Agent").send()
         return
@@ -340,38 +323,7 @@ async def on_message(message: cl.Message) -> None:
     inline_elements: list[cl.Element] = []
     sidebar_elements: list[cl.Element] = []
     if primary is not None:
-        synonyms = extract_primary_synonyms(response, primary.cid)
-        inline_elements.append(
-            cl.CustomElement(
-                # Renamed to V2 so the browser cannot serve the cached old
-                # JSX bundle for /public/elements/CompoundCard.jsx — Chainlit
-                # 2.11 does not version-hash custom-element URLs, so the
-                # only reliable way to bust a stuck client is a new filename.
-                name="CompoundCardV2",
-                props=build_compound_card_props(
-                    primary,
-                    explanation=normalized.explanation,
-                    synonyms=synonyms,
-                ),
-                display="inline",
-            )
-        )
-        sidebar_elements.append(
-            cl.Image(
-                name=f"CID {primary.cid} structure",
-                url=build_structure_image_url(primary.cid),
-                display="side",
-            )
-        )
-        sidebar_elements.append(
-            cl.Text(
-                # Renders as the section heading in the side panel — keep
-                # it user-facing Russian instead of the internal "properties".
-                name="Свойства вещества",
-                content=_build_details_markdown(response),
-                display="side",
-            )
-        )
+        inline_elements, sidebar_elements = _build_primary_compound_elements(response, primary)
 
     if normalized.tool_trace:
         async with cl.Step(name="Использованные инструменты", type="tool") as step:
@@ -391,22 +343,13 @@ async def on_message(message: cl.Message) -> None:
         explanation_block = "\n\nПочему результат подходит:\n" + "\n".join(
             f"- {item}" for item in normalized.explanation[:4]
         )
-
     clarification_block = ""
     if normalized.needs_clarification and normalized.clarification_question:
         clarification_block = f"\n\nУточнение:\n{normalized.clarification_question}"
 
-    async with cl.Step(name="Отбор результата") as step:
-        step.output = "\n".join(normalized.explanation[:4]) or (
-            normalized.clarification_question or "Агент завершил поиск без дополнительного пояснения."
-        )
-
-    # Debug-видимость что UI рендерит. Раньше было print() — оператор всё равно
-    # читает логи Chainlit, поэтому logger.debug достаточно.
     logger.debug(
-        "render: inline=%s sidebar=%s primary_cid=%s",
-        [f"{el.__class__.__name__}:{getattr(el, 'name', '?') or '?'}" for el in inline_elements],
-        [f"{el.__class__.__name__}:{getattr(el, 'name', '?') or '?'}" for el in sidebar_elements],
+        "render: inline=%d sidebar=%d cid=%s",
+        len(inline_elements), len(sidebar_elements),
         primary.cid if primary else None,
     )
 
@@ -416,10 +359,7 @@ async def on_message(message: cl.Message) -> None:
         author="PubChem Agent",
     ).send()
 
-    # display="side" сохранён у элементов: legacy side-view Chainlit не сбрасывает
-    # explicit sidebar пока обрабатываются emitted element events.
     if sidebar_elements:
         sidebar_title = f"Подробности — {primary.title or 'вещество'}" if primary else "Подробности"
         await cl.ElementSidebar.set_title(sidebar_title)
         await cl.ElementSidebar.set_elements(sidebar_elements, key=trace_id)
-        logger.debug("sidebar sent: %d elements, title=%r", len(sidebar_elements), sidebar_title)

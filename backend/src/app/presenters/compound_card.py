@@ -10,6 +10,8 @@ def build_compound_card_props(
     explanation: list[str] | None = None,
     synonyms: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Готовит props для inline-карточки в Chainlit (CustomElement CompoundCardV2).
+    TPSA/complexity/hbond-поля исключены: MCP-tools пока их не возвращают."""
     name = compound.title or compound.iupac_name or f"CID {compound.cid}"
     return {
         "cid": compound.cid,
@@ -20,10 +22,6 @@ def build_compound_card_props(
         "exact_mass": compound.exact_mass,
         "canonical_smiles": compound.canonical_smiles,
         "xlogp": compound.xlogp,
-        #"tpsa": compound.tpsa,
-        #"complexity": compound.complexity,
-        #"hbond_donor_count": compound.hbond_donor_count,
-        #"hbond_acceptor_count": compound.hbond_acceptor_count,
         "description": compound.description,
         "synonyms": list((synonyms or compound.synonyms_preview)[:8]),
         "why_it_matches": " ".join(explanation or []),
@@ -100,6 +98,52 @@ def build_candidates_markdown(matches: list[CompoundMatchCard]) -> str:
         if match.molecular_weight is not None:
             parts.append(f"{match.molecular_weight:.2f} g/mol")
         lines.append(" · ".join(parts))
+    return "\n".join(lines)
+
+
+def build_details_markdown(response: AgentResponseEnvelope) -> str:
+    """Markdown для правой side-панели Chainlit.
+
+    MCP-search tools сейчас возвращают только cid/title/formula/mol_weight,
+    поэтому rich-fields (IUPAC, SMILES, XLogP…) почти всегда пустые. Чтобы
+    панель не выглядела как одинокий заголовок «Подробности» — всегда печатаем
+    то что есть + ссылку на PubChem + ход поиска.
+    """
+    normalized = response.normalized
+    if normalized is None:
+        return "Подробные сведения недоступны."
+
+    primary = select_primary_compound(response)
+    if primary is None:
+        return build_tool_trace_markdown(response)
+
+    lines: list[str] = [f"### {primary.title or f'CID {primary.cid}'}"]
+    lines.append(f"- **PubChem CID:** {primary.cid}")
+    if primary.molecular_formula:
+        lines.append(f"- **Молекулярная формула:** `{primary.molecular_formula}`")
+    if primary.molecular_weight is not None:
+        lines.append(f"- **Молекулярная масса:** {primary.molecular_weight:.2f} г/моль")
+    if primary.iupac_name:
+        lines.append(f"- **IUPAC:** {primary.iupac_name}")
+    if primary.canonical_smiles:
+        lines.append(f"- **Canonical SMILES:** `{primary.canonical_smiles}`")
+    if primary.exact_mass is not None:
+        lines.append(f"- **Exact mass:** {primary.exact_mass:.4f}")
+    if primary.xlogp is not None:
+        lines.append(f"- **XLogP:** {primary.xlogp}")
+
+    lines.append("")
+    lines.append(f"[Открыть на PubChem ↗]({build_pubchem_compound_url(primary.cid)})")
+
+    if primary.description:
+        lines.append("")
+        lines.append("#### Описание")
+        lines.append(primary.description)
+
+    if normalized.tool_trace:
+        lines.append("")
+        lines.append(build_tool_trace_markdown(response))
+
     return "\n".join(lines)
 
 

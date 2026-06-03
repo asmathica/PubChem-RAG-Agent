@@ -141,12 +141,34 @@ def _extract_error_message(response: Any, result: dict[str, Any] | None) -> str 
     return None
 
 
+# Payload для DUPLICATE_TOOL_CALL — сериализуется один раз на импорт,
+# вместо повторной сериализации на каждом дубликате tool-call'а.
+_DUPLICATE_TOOL_CALL_PAYLOAD = json.dumps(
+    {
+        "ok": False,
+        "error": {
+            "code": "DUPLICATE_TOOL_CALL",
+            "message": (
+                "The same PubChem tool call was already executed in this run. "
+                "Reuse the previous result or answer the user directly."
+            ),
+            "retriable": False,
+            "details": None,
+        },
+    },
+    ensure_ascii=False,
+)
+
+
 def _build_duplicate_tool_call_guard() -> Any:
     """Блокирует повторный tool-call с теми же args в рамках одного run'а.
 
     Сравнивает (name, args) по JSON-сериализации. На повтор отдаёт ToolMessage
     с `ok=False, code=DUPLICATE_TOOL_CALL` — это сигнал агенту "используй
     предыдущий результат, а не дергай API снова".
+
+    `seen_signatures` живёт в замыкании per-runtime — не разделяется между
+    запросами (каждый prepare_agent_runtime создаёт свой guard).
     """
     seen_signatures: set[str] = set()
 
@@ -160,21 +182,7 @@ def _build_duplicate_tool_call_guard() -> Any:
         )
         if signature in seen_signatures:
             return ToolMessage(
-                content=json.dumps(
-                    {
-                        "ok": False,
-                        "error": {
-                            "code": "DUPLICATE_TOOL_CALL",
-                            "message": (
-                                "The same PubChem tool call was already executed in this run. "
-                                "Reuse the previous result or answer the user directly."
-                            ),
-                            "retriable": False,
-                            "details": None,
-                        },
-                    },
-                    ensure_ascii=False,
-                ),
+                content=_DUPLICATE_TOOL_CALL_PAYLOAD,
                 name=request.tool_call["name"],
                 tool_call_id=request.tool_call["id"],
                 status="error",
