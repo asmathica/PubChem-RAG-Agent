@@ -2,7 +2,6 @@ from dataclasses import dataclass
 import logging
 
 from langchain_openai import ChatOpenAI
-#from langchain_community.chat_models import ChatOllama
 from langchain_ollama import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError

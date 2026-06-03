@@ -58,28 +58,17 @@ class QueryService:
             raw_text = ""
             if mcp_result.content and hasattr(mcp_result.content[0], 'text'):
                 raw_text = mcp_result.content[0].text if mcp_result.content else ""
-                print(f"\n DEBUG RAW TEXT: {raw_text} \n")
-                
             else:
                 raw_text = str(mcp_result)
 
         except Exception as e:
             raise AppError(
-                ErrorCode.INTERNAL_ERROR, 
+                ErrorCode.INTERNAL_ERROR,
                 f"Ошибка получения ответа от MCP: {str(e)}",
-                http_status=500
+                http_status=500,
             )
-#парсинг ответа от mcp
-      #  try:
 
-       # except Exception as e:
-        #    raise AppError(
-         #       ErrorCode.INTERNAL_ERROR, 
-          #      f"Сервер вернул невалидный JSON",
-           #     http_status=502
-            #)
-
-
+        # MCP всегда возвращает JSON-строку в content[0].text — парсим один раз.
         data = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
         raw_matches = data.get("matches", [])
         normalized_matches = []
@@ -217,9 +206,8 @@ class QueryService:
         mapping = {
             "name": "search_by_name_pubchem",
             "smiles": "search_by_smiles_pubchem",
-           # "cid": "get_by_cid",
             "formula": "search_by_formula_pubchem",
             "inchikey": "search_by_inchikey_pubchem",
-            "smiles_similar": "search_similar_mol_pubchem"
+            "smiles_similar": "search_similar_mol_pubchem",
         }
         return mapping.get(mode, "search_by_name_pubchem")

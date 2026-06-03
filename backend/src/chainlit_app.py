@@ -140,14 +140,8 @@ def _build_details_markdown(response: AgentResponseEnvelope) -> str:
         basics.append(f"- **Exact mass:** {primary.exact_mass:.4f}")
     if primary.xlogp is not None:
         basics.append(f"- **XLogP:** {primary.xlogp}")
-    #if primary.tpsa is not None:
-     #   basics.append(f"- **TPSA:** {primary.tpsa}")
-    #if primary.complexity is not None:
-     #   basics.append(f"- **Complexity:** {primary.complexity}")
-    #if primary.hbond_donor_count is not None or primary.hbond_acceptor_count is not None:
-     #   donor = primary.hbond_donor_count if primary.hbond_donor_count is not None else "—"
-      #  acceptor = primary.hbond_acceptor_count if primary.hbond_acceptor_count is not None else "—"
-       # basics.append(f"- **H-bond донор/акцептор:** {donor} / {acceptor}")
+    # tpsa / complexity / hbond_* свойства MCP-tools пока не возвращают —
+    # включим обратно когда search_compound_by_* начнёт гидрировать их.
     lines.extend(basics)
 
     lines.append("")

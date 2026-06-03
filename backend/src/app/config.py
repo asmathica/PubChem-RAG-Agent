@@ -120,13 +120,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Возвращает singleton-настройки приложения (читаются один раз, потом кешируются)."""
     load_dotenv(str(ENV_PATH))
-   # env_key = os.environ.get("MODAL_GLM_API_KEY")
-    print(f"\n--- [CRITICAL DEBUG] ---")
-    print(f"Путь к .env: {ENV_PATH}")
-   # print(f"Ключ в os.environ: {env_key[:5]}***" if env_key else "Ключ в os.environ: MISSING")
-    #settings = Settings()
-
-   # print(f"Ключ в Settings объекте: {settings.modal_glm_api_key is not None}")
-    #print(f"------------------------\n")
     return Settings()
