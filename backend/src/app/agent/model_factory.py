@@ -384,23 +384,32 @@ def build_chat_model(settings: Settings, provider: LLMProviderName | None = None
                 "MODAL_GLM_API_KEY не настроен.",
                 http_status=500,
             )
+        # GLM-модели на Modal поддерживают "thinking" mode через extra_body;
+        # выключаем его если оператор поставил MODAL_GLM_DISABLE_THINKING=true.
+        extra_body: dict[str, object] | None = None
+        if settings.modal_glm_disable_thinking:
+            extra_body = {"thinking": {"type": "disabled"}}
+        instance = ChatOpenAI(
+            model=model_name,
+            api_key=settings.modal_glm_api_key.get_secret_value(),
+            base_url=settings.modal_glm_base_url,
+            timeout=settings.llm_request_timeout_seconds,
+            max_retries=settings.max_retries,
+            temperature=0,
+            model_kwargs=model_kwargs,
+            extra_body=extra_body,
+            use_responses_api=False,
+        )
+        return ResolvedChatModel(
+            provider="modal_glm",
+            model_name=model_name,
+            instance=instance.with_config(RunnableConfig(max_concurrency=1)),
+        )
 
-    extra_body: dict[str, object] | None = None##!!!!!
-    if settings.modal_glm_disable_thinking:
-        extra_body = {"thinking": {"type": "disabled"}}##!!!!!
-
-    instance = ChatOpenAI(
-        model=model_name,
-        api_key=settings.modal_glm_api_key.get_secret_value(),
-        base_url=settings.modal_glm_base_url,
-        timeout=settings.llm_request_timeout_seconds,
-        max_retries=settings.max_retries,
-        temperature=0,
-        model_kwargs=model_kwargs,
-        extra_body=extra_body,##!!!!!
-        use_responses_api=False,
+    # Если дошли сюда — `resolve_provider_model_name` уже отвалил бы провайдер,
+    # которого нет в whitelist. Этот raise — defensive, на случай рассинхрона.
+    raise AppError(
+        ErrorCode.LLM_NOT_CONFIGURED,
+        f"Не нашли реализацию для провайдера '{resolved_provider}'.",
+        http_status=500,
     )
-
-    return ResolvedChatModel(provider="modal_glm", 
-                             model_name=model_name, 
-                             instance = instance.with_config(RunnableConfig(max_concurrency=1)))

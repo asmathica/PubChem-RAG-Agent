@@ -89,18 +89,19 @@ class AgentService:
             logger.info(f"--- [AgentService] Runtime создан: provider {request.provider}, настройки: {self.settings}")
 
             try:
+                # max(agent_run, llm_request) — берём бóльший из двух дефолтов
+                # (обычно agent_run_timeout=240s), чтобы один медленный LLM-call
+                # не уронил весь tool-loop по таймауту.
                 result = await asyncio.wait_for(
-                runtime.agent.ainvoke(
-                    {"messages": [{"role": "user", "content": request.text}]},
-                    config=runtime.invoke_config,
-                    
-                ),
-                timeout=max(
-                    self.settings.agent_run_timeout_seconds,
-                    self.settings.llm_request_timeout_seconds,
-                    130.0,
-                ),
-            )
+                    runtime.agent.ainvoke(
+                        {"messages": [{"role": "user", "content": request.text}]},
+                        config=runtime.invoke_config,
+                    ),
+                    timeout=max(
+                        self.settings.agent_run_timeout_seconds,
+                        self.settings.llm_request_timeout_seconds,
+                    ),
+                )
                 tool_trace = [
                 AgentToolTraceEntry(
                 step = event.step,

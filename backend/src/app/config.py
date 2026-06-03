@@ -1,13 +1,19 @@
 from functools import lru_cache
-import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
 
-ENV_PATH =  "./.env"
+# Абсолютный путь до .env в backend/ (config.py живёт в backend/src/app/,
+# три уровня вверх = backend/). Раньше было относительное "./.env" — ломалось
+# при запуске не из backend/ (CI, тесты, импорты из других CWD).
+ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file = ENV_PATH,
+        env_file=ENV_PATH,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -34,7 +40,10 @@ class Settings(BaseSettings):
     heavy_query_concurrency: int = 1
     agent_max_steps: int = 10
 
-    llm_default_provider: str = "ollama"
+    # Primary provider по умолчанию. Mistral — самый щедрый free tier
+    # (60 RPM, 1B токенов/мес, native tool calling). Fallback chain ниже
+    # все равно подхватит при сбое. Переопределяется через .env.
+    llm_default_provider: str = "mistral"
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4.1-mini"

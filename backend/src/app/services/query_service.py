@@ -82,42 +82,29 @@ class QueryService:
 
         primary_overview = None
         synonyms = []
+        current_status = "success"
 
-        if not normalized_matches:#если ничего не найдено по результатам поиска в бд
-            _matches = [CompoundMatchCard.model_validate([{ "cid" : 0},
-                                                          {"XLogP": 0},
-                                                         { "title" : "Вещество не найдено"},
-                                                         { "molecular_formula" : None},
-                                                         { "molecular_weight" : None},
-                                                         { "image_data_url":  None}
-                                                         ])
-                        ]
-            current_status = "success"
+        if not normalized_matches:
+            # Пусто = пусто. Не подделываем CompoundMatchCard «Вещество не найдено» —
+            # фронт сам отрендерит empty state по count=0.
             additional_sections = {
-        "search_info": {
-            "mode": req.input_mode,
-            "count": 0,
-            "message": "По вашему запросу ничего не найдено в базе PubChem"
-        }
-    }
-        #если найдено
+                "search_info": {
+                    "mode": req.input_mode,
+                    "count": 0,
+                    "message": "По вашему запросу ничего не найдено в базе PubChem",
+                }
+            }
         else:
-         _matches = normalized_matches
-         current_status = "success"
-         primary_data = data.get("matches", [])[0]
-    
-         if raw_matches:
-            primary_overview = CompoundOverview.model_validate(raw_matches[0])
-
-         synonyms = data.get("synonyms", [])
-         additional_sections = {}
-         if "extended_properties" in data:
-            additional_sections["properties"] = data["extended_properties"]
-        
-         additional_sections["search_info"] = {
-            "mode": req.input_mode,
-            "count": len(normalized_matches)
-         }
+            if raw_matches:
+                primary_overview = CompoundOverview.model_validate(raw_matches[0])
+            synonyms = data.get("synonyms", [])
+            additional_sections = {}
+            if "extended_properties" in data:
+                additional_sections["properties"] = data["extended_properties"]
+            additional_sections["search_info"] = {
+                "mode": req.input_mode,
+                "count": len(normalized_matches),
+            }
 
         # финальный ответ
         return QueryResponseEnvelope(

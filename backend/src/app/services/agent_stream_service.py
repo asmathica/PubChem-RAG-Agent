@@ -107,7 +107,6 @@ class AgentStreamService:
                     timeout=max(
                         self.settings.agent_run_timeout_seconds,
                         self.settings.llm_request_timeout_seconds,
-                        30.0,
                     ),
                 )
                 logger.info(f"Агент подключен")

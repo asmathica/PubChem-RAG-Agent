@@ -328,8 +328,10 @@ async def on_message(message: cl.Message) -> None:
         await cl.Message(content=error.message, author="PubChem Agent").send()
         return
     except Exception as exc:
-        message = _humanize_runtime_error(exc)
-        await cl.Message(content=message, author="PubChem Agent").send()
+        # Раньше переменная называлась `message` и затирала параметр `message: cl.Message`,
+        # из-за чего ниже по коду `message.content` упало бы AttributeError.
+        error_text = _humanize_runtime_error(exc)
+        await cl.Message(content=error_text, author="PubChem Agent").send()
         return
 
     normalized = response.normalized
