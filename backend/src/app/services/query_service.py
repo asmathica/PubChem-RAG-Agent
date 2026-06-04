@@ -1,12 +1,15 @@
-import uuid, json
+import json
+import logging
+import uuid
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
+
 from app.config import Settings
 from app.errors.models import AppError, ErrorCode
-from app.schemas.common import PresentationHints, WarningMessage, CompoundMatchCard, CompoundOverview
-from app.schemas.query import  QueryNormalizedPayload, QueryResponseEnvelope, ResolvedQuery, InputMode
-from app.schemas.query import QueryRequest
-from app.services.envelope_builder import MCP_LOOKUP_MAP  # noqa: F401  — публичный re-export для возможных будущих consumer'ов
-import logging
+from pydantic import ValidationError
+
+from app.schemas.common import CompoundMatchCard, CompoundOverview, PresentationHints, WarningMessage
+from app.schemas.query import InputMode, QueryNormalizedPayload, QueryRequest, QueryResponseEnvelope, ResolvedQuery
 SUPPORTED_INPUT_MODES = {"cid", "name", "smiles", "inchikey", "formula"}
 SUPPORTED_OPERATIONS = {"property",
     "record",
@@ -29,10 +32,8 @@ class QueryService:
         self.mcp_client = mcp_client
 
     async def execute(self, req: QueryRequest) -> QueryResponseEnvelope:
-        """
-        Выполняет запрос через систему MCP инструментов.
-        """
-        logger.info(f"--- [QueryService] Начало обработки запроса:  ---")
+        """Типизированный поиск через MCP tools (без LLM): mode → tool → нормализация."""
+        logger.info("QueryService: %s '%s'", req.input_mode, req.identifier)
         self._validate_capabilities(req)
         limit = req.limit if req.limit else self.settings.candidate_limit
 
@@ -96,7 +97,12 @@ class QueryService:
             }
         else:
             if raw_matches:
-                primary_overview = CompoundOverview.model_validate(raw_matches[0])
+                # Та же запись уже прошла валидацию как CompoundMatchCard выше;
+                # CompoundOverview шире — невалидный payload не должен ронять весь ответ.
+                try:
+                    primary_overview = CompoundOverview.model_validate(raw_matches[0])
+                except ValidationError:
+                    primary_overview = None
             synonyms = data.get("synonyms", [])
             additional_sections = {}
             if "extended_properties" in data:
@@ -190,11 +196,12 @@ class QueryService:
         str: Название соответствующего инструмента (функции) для MCP-клиента. 
             По умолчанию возвращает "search_by_name_pubchem", если режим не распознан.
     """
+        # Имена синхронизированы с реальными MCP tools (app/agent/mcp_tools/*).
         mapping = {
-            "name": "search_by_name_pubchem",
-            "smiles": "search_by_smiles_pubchem",
-            "formula": "search_by_formula_pubchem",
-            "inchikey": "search_by_inchikey_pubchem",
-            "smiles_similar": "search_similar_mol_pubchem",
+            "name": "search_compound_by_name",
+            "smiles": "search_compound_by_smiles",
+            "formula": "search_compound_by_formula",
+            "inchikey": "search_compound_by_inchikey",
+            "smiles_similar": "search_by_similar_mol_pubchem",
         }
-        return mapping.get(mode, "search_by_name_pubchem")
+        return mapping.get(mode, "search_compound_by_name")

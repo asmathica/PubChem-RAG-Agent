@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
@@ -181,7 +180,7 @@ _PROVIDER_BUILDERS: dict[LLMProviderName, _BuilderFn] = {
 # Имя модели для каждого провайдера (для resolve_provider_model_name).
 _PROVIDER_MODEL_ATTR: dict[LLMProviderName, str] = {
     "openai": "openai_model",
-    "ollama": "ollama_base_url",  # для Ollama "имя модели" = base URL
+    "ollama": "base_llm_model",
     "gemini": "gemini_model",
     "openrouter": "openrouter_model",
     "nvidia": "nvidia_model",

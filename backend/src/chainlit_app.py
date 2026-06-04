@@ -29,18 +29,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def check_ollama_availability(base_url: str = "http://localhost:11434") -> bool:
-    """Проверяет, запущена ли локальная Ollama. Таймаут 2 секунды — чтобы не вешать UI."""
-    async with httpx.AsyncClient() as client:
-        try:
+    """True если локальная Ollama отвечает. Таймаут 2с — чтобы не вешать UI."""
+    try:
+        async with httpx.AsyncClient() as client:
             response = await client.get(base_url, timeout=2.0)
-            if response.status_code == 200 and "Ollama is running" in response.text:
-                logger.info("Ollama доступна на %s", base_url)
-                return True
-            logger.warning("Ollama ответила статусом %s", response.status_code)
-            return False
-        except (httpx.ConnectError, httpx.TimeoutException):
-            logger.error("Ollama недоступна на %s — запусти приложение Ollama", base_url)
-            return False
+        return response.status_code == 200 and "Ollama is running" in response.text
+    except (httpx.ConnectError, httpx.TimeoutException):
+        logger.warning("Ollama недоступна на %s", base_url)
+        return False
 
 def _get_or_create_container() -> AppContainer:
     container = cl.user_session.get("container")
@@ -51,19 +47,10 @@ def _get_or_create_container() -> AppContainer:
 
 
 def _current_thread_id() -> str:
-    """LangGraph thread_id = id текущего Chainlit chat'а.
-    Каждый чат в sidebar имеет свой thread_id (Chainlit сам генерирует UUID при
-    создании нового чата). Новый чат → новый thread_id → свежая память агента.
-    Resume старого чата → старый thread_id → checkpointer подхватит state."""
-    tid = cl.context.session.thread_id
-    if tid:
-        return cast(str, tid)
-    # Fallback (не должен срабатывать внутри chat lifecycle hooks, но на всякий случай).
-    fallback = cl.user_session.get("pubchem_session_id")
-    if fallback is None:
-        fallback = uuid.uuid4().hex
-        cl.user_session.set("pubchem_session_id", fallback)
-    return cast(str, fallback)
+    """LangGraph thread_id = id текущего Chainlit чата (свой UUID на каждый чат).
+    Новый чат → свежая память агента; resume → checkpointer подхватит state по
+    тому же id. Если None (вне chat lifecycle) — runtime откатится на trace_id."""
+    return cast(str, cl.context.session.thread_id)
 
 
 def _data_layer_ready(database_url: str, timeout: float = 2.0) -> bool:
@@ -390,7 +377,7 @@ async def on_message(message: cl.Message) -> None:
         sidebar_elements.append(
             cl.Text(
                 name="candidates",
-                content="### Другие кандидаты\n" + build_candidates_markdown(normalized.matches[1:]),
+                content=build_candidates_markdown(normalized.matches[1:]),
                 display="side",
             )
         )

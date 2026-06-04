@@ -15,7 +15,6 @@ mcp = FastMCP("pubchem-tools")
 mcp.tool()(search_compound_by_name)
 mcp.tool()(search_compound_by_smiles)
 mcp.tool()(search_compound_by_formula)
-mcp.tool()(search_compound_by_formula)
 mcp.tool()(search_compound_by_inchikey)
 
 mcp.tool()(search_substructure_pubchem)

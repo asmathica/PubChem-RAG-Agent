@@ -7,7 +7,7 @@ LangGraph `create_agent(...).ainvoke(...)` возвращает сырой state
 структуру для API/UI: final_answer, parsed_query, matches, compounds,
 explanation, clarification, warnings.
 
-Используется из `AgentService` и `AgentStreamService` одинаково.
+Единая точка сборки envelope, используется из `AgentService`.
 """
 from __future__ import annotations
 
@@ -164,8 +164,6 @@ _EXPLANATION_TEMPLATES: dict[str, tuple[str, str]] = {
                  "The chemical structure (SMILES) was used: {id}."),
     "formula":  ("Поиск выполнен по молекулярной формуле: {id}.",
                  "The search was performed by molecular formula: {id}."),
-    "cid":      ("Запрос выполнен по прямому идентификатору PubChem CID: {id}.",
-                 "The query was executed by direct PubChem CID: {id}."),
     "inchikey": ("Поиск по InChIKey: {id}.",
                  "Search by InChIKey: {id}."),
 }

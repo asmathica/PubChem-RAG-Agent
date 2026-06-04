@@ -1,8 +1,14 @@
 import urllib.parse
+
 import httpx
+
 from app.agent.mcp_tools.search_cid import perform_search
-from app.schemas.schemas import (SearchByNameInput,SearchBySMILESInput,SearchByFormulaInput,SearchByMassRangeArgs
-                                 ,SearchByInChIKeyArgs)
+from app.schemas.schemas import (
+    SearchByFormulaInput,
+    SearchByInChIKeyArgs,
+    SearchByNameInput,
+    SearchBySMILESInput,
+)
 
 
 async def search_compound_by_name(name: str, limit: int = 5) -> dict:
