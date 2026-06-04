@@ -66,16 +66,58 @@ def _current_thread_id() -> str:
     return cast(str, fallback)
 
 
-# Data layer для хранения чатов, сообщений и пользователей в Postgres. Без него
-# Chainlit UI не показывает sidebar с историей чатов и кнопку "New Chat" — это
-# единственный способ получить multi-chat функционал. Регистрируется только при
-# наличии DATABASE_URL в .env (graceful fallback на dev режим без persistence).
+def _data_layer_ready(database_url: str, timeout: float = 2.0) -> bool:
+    """Проверяет что Postgres доступен И схема Chainlit применена (таблица users).
+
+    Защита от ошибки 'Not Found: User not found'. Недостаточно проверить только
+    TCP-порт: если Postgres поднят, но схема не применена, Chainlit.get_user
+    вернёт None → HTTP 404 'User not found' (ровно исходный баг). Поэтому делаем
+    реальный коннект + проверяем наличие таблицы users. Любой сбой (порт закрыт,
+    нет БД, нет схемы) → False → data layer не регистрируем → UI работает без
+    истории чатов, но без красных ошибок.
+    """
+    import asyncio
+
+    async def _check() -> bool:
+        import asyncpg
+
+        # asyncpg не понимает '+asyncpg' в схеме URL — убираем драйвер-суффикс.
+        dsn = database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        try:
+            conn = await asyncio.wait_for(asyncpg.connect(dsn), timeout=timeout)
+        except (OSError, asyncpg.PostgresError, asyncio.TimeoutError):
+            return False
+        try:
+            return bool(await conn.fetchval("SELECT to_regclass('public.users') IS NOT NULL"))
+        finally:
+            await conn.close()
+
+    try:
+        return asyncio.run(_check())
+    except RuntimeError:
+        # Сюда попадаем только если loop уже запущен (нетипично на импорте
+        # модуля). Безопаснее не регистрировать data layer, чем рискнуть 404.
+        return False
+
+
+# Data layer хранит чаты/сообщения/пользователей в Postgres. Без него Chainlit
+# не показывает sidebar с историей чатов и кнопку "New Chat". Регистрируем ТОЛЬКО
+# если (1) задан DATABASE_URL и (2) БД доступна со схемой — иначе graceful
+# degradation в dev-режим без истории (но без ошибок 'User not found').
 _DATABASE_URL = os.environ.get("DATABASE_URL")
 
-if _DATABASE_URL:
+if _DATABASE_URL and _data_layer_ready(_DATABASE_URL):
     @cl.data_layer
     def get_data_layer():
         return SQLAlchemyDataLayer(conninfo=_DATABASE_URL)
+
+    logger.info("Chainlit data layer ВКЛЮЧЁН — история чатов сохраняется в Postgres")
+elif _DATABASE_URL:
+    logger.warning(
+        "DATABASE_URL задан, но БД недоступна или схема не применена — data layer "
+        "ОТКЛЮЧЁН (UI без истории чатов). Применить схему: "
+        "psql -d chainlit -f infra/chainlit_schema.sql"
+    )
 
 
 @cl.password_auth_callback
