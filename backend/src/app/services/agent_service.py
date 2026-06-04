@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.errors import GraphRecursionError
 
 from app.agent.error_mapper import normalize_agent_exception
 from app.agent.meta import build_capability_response, is_capability_question
@@ -99,9 +100,19 @@ class AgentService:
                         self.settings.llm_request_timeout_seconds,
                     ),
                 )
+            except GraphRecursionError as exc:
+                # Сложные multistep-запросы (similarity, цепочки) могут упереться
+                # в лимит шагов агента. Но если вещества УЖЕ найдены — собираем
+                # карточку из собранного, а не отдаём голую ошибку.
+                partial = self._partial_envelope(resolved_trace_id, request, runtime)
+                if partial is not None:
+                    logger.warning("Agent hit step limit; partial result with %d matches",
+                                   len(partial.normalized.matches))
+                    return partial
+                logger.error("Agent step limit, no compounds collected: %s", exc)
+                raise normalize_agent_exception(exc) from exc
             except Exception as exc:
-                # Все ошибки агента (timeout, rate limit, GraphRecursionError, ...)
-                # маппятся в AppError единым нормализатором.
+                # Прочие ошибки (timeout, rate limit, ...) → единый нормализатор.
                 logger.error("Agent execution failed: %s", exc, exc_info=True)
                 raise normalize_agent_exception(exc) from exc
             finally:
@@ -119,6 +130,26 @@ class AgentService:
                 result=result,
                 tool_trace=_build_tool_trace(runtime),
             )
+
+    def _partial_envelope(
+        self,
+        trace_id: str,
+        request: AgentRequest,
+        runtime: PreparedAgentRuntime,
+    ) -> AgentResponseEnvelope | None:
+        """Envelope из уже собранных tool-результатов (без финального ответа LLM).
+        Возвращает None если веществ не найдено — тогда caller отдаёт ошибку."""
+        envelope = build_agent_response_envelope(
+            trace_id=trace_id,
+            request=request,
+            runtime=runtime,
+            result={"messages": []},
+            tool_trace=_build_tool_trace(runtime),
+        )
+        has_compound = envelope.normalized and (
+            envelope.normalized.matches or envelope.normalized.compounds
+        )
+        return envelope if has_compound else None
 
     def _handle_capability_question(
         self,
