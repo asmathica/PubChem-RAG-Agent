@@ -283,6 +283,22 @@ def _resolve_session_provider(container: AppContainer) -> str:
     return cast(str, cl.user_session.get("llm_provider") or container.settings.llm_default_provider)
 
 
+async def _send_agent_answer(content: str, elements: list[cl.Element] | None = None) -> None:
+    """Отправляет финальный ответ ассистента как root-level сообщение (parent_id=None).
+
+    Зачем форсим parent_id=None: Chainlit в Message.__post_init__ привязывает
+    сообщение к последнему открытому cl.Step. Промежуточные cl.Step ("Поиск",
+    "Интерпретация") при cot='hidden' НЕ персистятся в data layer, поэтому ответ
+    с parentId на них при resume становится orphan'ом — фронт не может отрисовать
+    сообщение с несуществующим родителем. Из-за этого в истории чата были видны
+    только запросы пользователя, но не ответы агента. Root-level (parent_id=None)
+    сохраняется и восстанавливается корректно.
+    """
+    msg = cl.Message(content=content, elements=elements or [], author="PubChem Agent")
+    msg.parent_id = None
+    await msg.send()
+
+
 def _build_primary_compound_elements(
     response: AgentResponseEnvelope,
     primary,
@@ -344,16 +360,15 @@ async def on_message(message: cl.Message) -> None:
                 response = await _execute()
                 step.output = "Поиск завершён."
     except AppError as error:
-        await cl.Message(content=error.message, author="PubChem Agent").send()
+        await _send_agent_answer(error.message)
         return
     except Exception as exc:
-        error_text = _humanize_runtime_error(exc)
-        await cl.Message(content=error_text, author="PubChem Agent").send()
+        await _send_agent_answer(_humanize_runtime_error(exc))
         return
 
     normalized = response.normalized
     if normalized is None:
-        await cl.Message(content="Не удалось получить итоговый ответ от агента.", author="PubChem Agent").send()
+        await _send_agent_answer("Не удалось получить итоговый ответ от агента.")
         return
 
     parsed_query_payload = normalized.parsed_query.model_dump(mode="json", exclude_none=True)
@@ -395,11 +410,10 @@ async def on_message(message: cl.Message) -> None:
         primary.cid if primary else None,
     )
 
-    await cl.Message(
-        content=f"{normalized.final_answer}{explanation_block}{clarification_block}",
+    await _send_agent_answer(
+        f"{normalized.final_answer}{explanation_block}{clarification_block}",
         elements=inline_elements,
-        author="PubChem Agent",
-    ).send()
+    )
 
     if sidebar_elements:
         sidebar_title = f"Подробности — {primary.title or 'вещество'}" if primary else "Подробности"
