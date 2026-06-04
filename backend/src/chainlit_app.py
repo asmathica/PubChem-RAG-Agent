@@ -14,13 +14,12 @@ from app.agent.meta import is_capability_question
 from app.container import AppContainer, build_container
 from app.errors.models import AppError
 from app.presenters.compound_card import (
-    build_candidates_markdown,
     build_compound_card_props,
     build_details_markdown,
     build_structure_image_url,
     build_tool_trace_markdown,
     extract_primary_synonyms,
-    select_primary_compound,
+    select_compounds_for_cards,
 )
 from app.schemas.agent import AgentRequest, AgentResponseEnvelope
 import httpx
@@ -286,26 +285,35 @@ async def _send_agent_answer(content: str, elements: list[cl.Element] | None = N
     await msg.send()
 
 
-def _build_primary_compound_elements(
+def _build_compound_elements(
     response: AgentResponseEnvelope,
-    primary,
+    compounds: list,
 ) -> tuple[list[cl.Element], list[cl.Element]]:
-    """Inline-карточка (CompoundCardV2 с миниатюрой структуры) + sidebar
-    (картинка структуры + свойства markdown) для primary compound."""
-    synonyms = extract_primary_synonyms(response, primary.cid)
-    inline = [
-        cl.CustomElement(
-            # V2 в имени — чтобы браузер не отдавал кэш старой /public/elements/CompoundCard.jsx;
-            # Chainlit 2.11 не делает version-hash в URL, перебить кеш можно только через имя.
-            name="CompoundCardV2",
-            props=build_compound_card_props(
-                primary,
-                explanation=response.normalized.explanation if response.normalized else None,
-                synonyms=synonyms,
-            ),
-            display="inline",
-        ),
-    ]
+    """Карточка CompoundCardV2 на КАЖДОЕ найденное вещество (одно → одна,
+    несколько → несколько) + sidebar (картинка + свойства первого вещества).
+
+    explanation ("почему подходит") кладём только в первую карточку — он
+    описывает запрос целиком, а не конкретный кандидат.
+    """
+    explanation = response.normalized.explanation if response.normalized else None
+    inline: list[cl.Element] = []
+    for index, compound in enumerate(compounds):
+        inline.append(
+            cl.CustomElement(
+                # V2 в имени — чтобы браузер не отдавал кэш старой CompoundCard.jsx;
+                # Chainlit 2.11 не version-hash'ит URL, перебить кеш можно только именем.
+                name="CompoundCardV2",
+                props=build_compound_card_props(
+                    compound,
+                    explanation=explanation if index == 0 else None,
+                    synonyms=extract_primary_synonyms(response, compound.cid),
+                ),
+                display="inline",
+            )
+        )
+
+    # Sidebar — детали первого (главного) вещества.
+    primary = compounds[0]
     sidebar = [
         cl.Image(
             name=f"CID {primary.cid} structure",
@@ -364,24 +372,17 @@ async def on_message(message: cl.Message) -> None:
         step.input = {"query": message.content}
         step.output = json.dumps(parsed_query_payload, ensure_ascii=False, indent=2)
 
-    primary = select_primary_compound(response)
+    # Карточка на каждое найденное вещество: одно → одна, несколько → несколько.
+    compounds = select_compounds_for_cards(response)
     inline_elements: list[cl.Element] = []
     sidebar_elements: list[cl.Element] = []
-    if primary is not None:
-        inline_elements, sidebar_elements = _build_primary_compound_elements(response, primary)
+    if compounds:
+        inline_elements, sidebar_elements = _build_compound_elements(response, compounds)
+    primary = compounds[0] if compounds else None
 
     if normalized.tool_trace:
         async with cl.Step(name="Использованные инструменты", type="tool") as step:
             step.output = build_tool_trace_markdown(response)
-
-    if len(normalized.matches) > 1:
-        sidebar_elements.append(
-            cl.Text(
-                name="candidates",
-                content=build_candidates_markdown(normalized.matches[1:]),
-                display="side",
-            )
-        )
 
     explanation_block = ""
     if normalized.explanation:

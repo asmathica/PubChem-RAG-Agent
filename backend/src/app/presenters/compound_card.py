@@ -52,12 +52,33 @@ def select_primary_compound(response: AgentResponseEnvelope) -> CompoundOverview
         return normalized.compounds[0]
 
     if normalized.matches:
-        # Поднимаем match до CompoundOverview, копируя только общие поля
-        # (всё что PubChem уже вернул) — без второго запроса к API.
-        match_data = normalized.matches[0].model_dump()
-        shared = {k: v for k, v in match_data.items() if k in CompoundOverview.model_fields}
-        return CompoundOverview(**shared)
+        return _match_to_overview(normalized.matches[0])
     return None
+
+
+def _match_to_overview(match: CompoundMatchCard) -> CompoundOverview:
+    """Поднимает match до CompoundOverview, копируя только общие поля
+    (всё что PubChem уже вернул) — без второго запроса к API."""
+    shared = {k: v for k, v in match.model_dump().items() if k in CompoundOverview.model_fields}
+    return CompoundOverview(**shared)
+
+
+def select_compounds_for_cards(response: AgentResponseEnvelope, limit: int = 4) -> list[CompoundOverview]:
+    """Все вещества для карточек: полные compounds если есть, иначе matches.
+    Дедуп по CID, не более `limit` штук. Одно вещество → одна карточка,
+    несколько → несколько."""
+    normalized = response.normalized
+    if normalized is None:
+        return []
+
+    source = normalized.compounds or [_match_to_overview(m) for m in normalized.matches]
+    seen: set[int] = set()
+    unique: list[CompoundOverview] = []
+    for compound in source:
+        if compound.cid not in seen:
+            seen.add(compound.cid)
+            unique.append(compound)
+    return unique[:limit]
 
 
 def extract_primary_synonyms(response: AgentResponseEnvelope, cid: int) -> list[str]:
@@ -70,21 +91,6 @@ def extract_primary_synonyms(response: AgentResponseEnvelope, cid: int) -> list[
             synonyms = result.get("synonyms") or []
             return [value for value in synonyms if isinstance(value, str)]
     return []
-
-
-def build_candidates_markdown(matches: list[CompoundMatchCard]) -> str:
-    if not matches:
-        return "Других кандидатов не найдено."
-
-    lines = ["### Другие кандидаты"]  # заголовок здесь, вызывающий не дублирует
-    for index, match in enumerate(matches, start=1):
-        parts = [f"{index}. **{match.title or f'CID {match.cid}'}**", f"`CID {match.cid}`"]
-        if match.molecular_formula:
-            parts.append(match.molecular_formula)
-        if match.molecular_weight is not None:
-            parts.append(f"{match.molecular_weight:.2f} g/mol")
-        lines.append(" · ".join(parts))
-    return "\n".join(lines)
 
 
 def build_details_markdown(response: AgentResponseEnvelope) -> str:
