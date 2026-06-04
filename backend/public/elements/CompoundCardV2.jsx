@@ -92,6 +92,7 @@ function HeroTile({ icon, label, value, unit }) {
 export default function CompoundCard() {
   const name = props.name || "Unknown compound"
   const iupac = props.iupac_name || null
+  const imageUrl = props.image_url || null
   const pubchemUrl = props.pubchem_url || null
   const whyItMatches = props.why_it_matches || null
   const synonyms = Array.isArray(props.synonyms) ? props.synonyms : []
@@ -150,21 +151,30 @@ export default function CompoundCard() {
       </CardHeader>
 
       <CardContent className="space-y-4 pt-0">
-        {/* HERO: две главные характеристики. Картинку структуры НЕ дублируем
-            здесь — она встроена в markdown текста ответа (так молекула
-            персистится и видна при resume истории чата). */}
-        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr" }}>
-          <HeroTile
-            icon={<FlaskConical className="h-4 w-4" style={iconStyle} />}
-            label="Формула"
-            value={<span className="font-mono">{formatFormula(formula)}</span>}
-          />
-          <HeroTile
-            icon={<Weight className="h-4 w-4" style={iconStyle} />}
-            label="Мол. масса"
-            value={weight ?? "—"}
-            unit={weight ? "г/моль" : null}
-          />
+        {/* HERO: миниатюра структуры слева + две главные характеристики справа. */}
+        <div className="grid gap-4" style={{ gridTemplateColumns: imageUrl ? "150px 1fr" : "1fr" }}>
+          {imageUrl ? (
+            <div
+              className="flex h-[140px] w-[150px] items-center justify-center rounded-2xl border bg-white p-3"
+              style={{ borderColor: "hsl(var(--border))" }}
+            >
+              <img src={imageUrl} alt={`${name} structure`} className="max-h-full max-w-full object-contain" />
+            </div>
+          ) : null}
+
+          <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr" }}>
+            <HeroTile
+              icon={<FlaskConical className="h-4 w-4" style={iconStyle} />}
+              label="Формула"
+              value={<span className="font-mono">{formatFormula(formula)}</span>}
+            />
+            <HeroTile
+              icon={<Weight className="h-4 w-4" style={iconStyle} />}
+              label="Мол. масса"
+              value={weight ?? "—"}
+              unit={weight ? "г/моль" : null}
+            />
+          </div>
         </div>
 
         {/* PROPERTIES GRID: always 2 columns, hides empty tiles */}
