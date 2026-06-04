@@ -303,7 +303,12 @@ def _build_primary_compound_elements(
     response: AgentResponseEnvelope,
     primary,
 ) -> tuple[list[cl.Element], list[cl.Element]]:
-    """Inline (CompoundCardV2) + sidebar (structure image + properties markdown) для primary compound."""
+    """Inline-карточка (CompoundCardV2) + sidebar (свойства markdown) для primary compound.
+
+    Картинку структуры здесь НЕ добавляем (ни в карточку, ни в sidebar) — она
+    встроена в markdown текста ответа (см. on_message), чтобы молекула
+    персистилась и была видна при resume истории чата, без дублей в live.
+    """
     synonyms = extract_primary_synonyms(response, primary.cid)
     inline = [
         cl.CustomElement(
@@ -319,11 +324,6 @@ def _build_primary_compound_elements(
         ),
     ]
     sidebar = [
-        cl.Image(
-            name=f"CID {primary.cid} structure",
-            url=build_structure_image_url(primary.cid),
-            display="side",
-        ),
         cl.Text(
             name="Свойства вещества",
             content=build_details_markdown(response),
@@ -404,6 +404,15 @@ async def on_message(message: cl.Message) -> None:
     if normalized.needs_clarification and normalized.clarification_question:
         clarification_block = f"\n\nУточнение:\n{normalized.clarification_question}"
 
+    # Картинку структуры встраиваем прямо в markdown текста ответа. Так молекула
+    # видна ВСЕГДА: и при живом запросе, и при resume истории чата. Иначе она
+    # жила только в CustomElement-карточке (CompoundCardV2), а Chainlit не
+    # персистит elements без storage client → в истории оставался один текст.
+    structure_block = ""
+    if primary is not None:
+        structure_url = build_structure_image_url(primary.cid)
+        structure_block = f"\n\n![Структура {primary.title or f'CID {primary.cid}'}]({structure_url})"
+
     logger.debug(
         "render: inline=%d sidebar=%d cid=%s",
         len(inline_elements), len(sidebar_elements),
@@ -411,7 +420,7 @@ async def on_message(message: cl.Message) -> None:
     )
 
     await _send_agent_answer(
-        f"{normalized.final_answer}{explanation_block}{clarification_block}",
+        f"{normalized.final_answer}{explanation_block}{clarification_block}{structure_block}",
         elements=inline_elements,
     )
 

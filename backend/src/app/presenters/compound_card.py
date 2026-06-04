@@ -25,7 +25,8 @@ def build_compound_card_props(
         "description": compound.description,
         "synonyms": list((synonyms or compound.synonyms_preview)[:8]),
         "why_it_matches": " ".join(explanation or []),
-        "image_url": build_structure_image_url(compound.cid),
+        # image_url убран: картинка структуры теперь в markdown текста ответа
+        # (персистится при resume). Карточка показывает только свойства.
         "pubchem_url": build_pubchem_compound_url(compound.cid),
         "ghs_hazards": [],
     }
