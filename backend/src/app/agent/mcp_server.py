@@ -13,6 +13,7 @@ FastMCP; сама логика обращения к PubChem — в `app.agent.m
 from mcp.server.fastmcp import FastMCP
 
 from app.agent.mcp_tools.base_search import (
+    search_compound_by_cid,
     search_compound_by_formula,
     search_compound_by_inchikey,
     search_compound_by_name,
@@ -27,6 +28,7 @@ mcp.tool()(search_compound_by_name)
 mcp.tool()(search_compound_by_smiles)
 mcp.tool()(search_compound_by_formula)
 mcp.tool()(search_compound_by_inchikey)
+mcp.tool()(search_compound_by_cid)
 mcp.tool()(search_substructure_pubchem)
 mcp.tool()(search_by_similar_mol_pubchem)
 

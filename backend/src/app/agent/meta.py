@@ -43,6 +43,7 @@ _STATIC_TOOL_CATALOG = (
     ("search_compound_by_smiles", "Поиск по SMILES-структуре."),
     ("search_compound_by_formula", "Поиск по молекулярной формуле."),
     ("search_compound_by_inchikey", "Поиск по InChIKey."),
+    ("search_compound_by_cid", "Прямая выборка вещества по известному PubChem CID."),
 )
 
 
@@ -54,7 +55,8 @@ def build_capability_response(
     model_name: str,
     mcp_tools: list[Any] | None = None,
 ) -> AgentResponseEnvelope:
-    is_russian = any("а" <= char <= "я" or char == "ё" for char in request_text.casefold())
+    # Полный кириллический блок U+0400-U+04FF — ловит заглавные/строчные/ё.
+    is_russian = any("Ѐ" <= char <= "ӿ" for char in request_text)
 
     header = "У меня есть такие инструменты через MCP:" if is_russian else "I have these MCP tools:"
 

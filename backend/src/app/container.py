@@ -47,19 +47,10 @@ class AppContainer:
 
 
 def build_container(settings: Settings | None = None) -> AppContainer:
-    """Инициализирует и собирает все зависимости приложения в единый контейнер.
+    """Ручная сборка DI-графа (AppContainer): MCP-клиент + сервисы (agent/query/interpret).
 
-    Функция создает экземпляры базовых сервисов (кеширование, лимитирование запросов, 
-    транспортный слой), настраивает MCP-клиент для работы с сервером PubChem и 
-    формирует высокоуровневые сервисы (поиск, интерпретация, агентные службы).
-
-    Args:
-        settings (Settings | None, optional): Объект настроек приложения. Если не передан, 
-            используется результат вызова `get_settings()`.
-
-    Returns:
-        AppContainer: Объект-контейнер, содержащий инициализированные экземпляры всех 
-            сервисов, необходимых для работы жизненного цикла приложения.
+    Типизированный слой (cache/rate_limiter/transport/adapter) собирается, но пока
+    не подключён — см. docs/architecture.md §6.2.
     """
     # .env лежит в корне репо (на 4 уровня выше container.py).
     env_path = Path(__file__).parent.parent.parent.parent / ".env"

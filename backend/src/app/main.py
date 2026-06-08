@@ -42,22 +42,9 @@ def _silence_otel_when_langfuse_offline(settings) -> None:
 
 
 def create_app(container_override: AppContainer | None = None) -> FastAPI:
-    """Создаёт и конфигурирует экземпляр приложения FastAPI.
+    """Фабрика FastAPI-приложения: CORS, trace-id middleware, обработчики ошибок, роуты, lifespan контейнера.
 
-    Функция инкапсулирует логику инициализации веб-сервиса: от настройки CORS 
-    и промежуточного ПО (middleware) до регистрации маршрутов и глобальных обработчиков 
-    исключений. Особое внимание уделяется управлению жизненным циклом (lifespan) 
-    для корректного запуска и остановки контейнера зависимостей.
-
-    Args:
-        container_override (AppContainer | None, optional): Возможность передать 
-            преднастроенный контейнер зависимостей. Полезно для интеграционного 
-            тестирования (например, для подмены реальных сервисов моками).
-
-    Returns:
-        FastAPI: Полностью настроенный экземпляр приложения, готовый к запуску 
-            через ASGI-сервер (например, uvicorn).
-
+    container_override — для интеграционных тестов (подмена контейнера моком).
     """
     settings = get_settings()
     _silence_otel_when_langfuse_offline(settings)

@@ -39,23 +39,17 @@ class QueryService:
 
         tool_name = self._map_input_to_tool(req.input_mode)
 
-        if not tool_name:
-            raise AppError(ErrorCode.INVALID_INPUT, f"Режим {req.input_mode} не поддерживается")
-        
         tool_args = {
             req.input_mode: req.identifier,
             "limit": limit
         }
 
-#вызов тулов
         try:
          async with self.mcp_client.session("pubchem") as session:
-            logger.info(f"Сессия с pubchem открыта. Вызываем инструмент: {tool_name}")
             mcp_result = await session.call_tool(
                     name=tool_name,
                     arguments=tool_args
                 )
-            logger.info("mcp_result был вызван корерктно")
             raw_text = ""
             if mcp_result.content and hasattr(mcp_result.content[0], 'text'):
                 raw_text = mcp_result.content[0].text if mcp_result.content else ""
@@ -83,7 +77,6 @@ class QueryService:
 
         primary_overview = None
         synonyms = []
-        current_status = "success"
 
         if not normalized_matches:
             # Пусто = пусто. Не подделываем CompoundMatchCard «Вещество не найдено» —
@@ -115,8 +108,8 @@ class QueryService:
         # финальный ответ
         return QueryResponseEnvelope(
             trace_id=str(uuid.uuid4()),
-            source="pubchem-mcp-service", 
-            status = current_status,
+            source="pubchem-mcp-service",
+            status="success",
             raw = data if req.include_raw else None,
             normalized=QueryNormalizedPayload(
                 query=ResolvedQuery(
@@ -139,7 +132,6 @@ class QueryService:
         )
 
     def _validate_capabilities(self, req:  QueryRequest) -> None:
-    #вернуть проверку домена
         if req.input_mode not in SUPPORTED_INPUT_MODES:
             raise AppError(
                 ErrorCode.UNSUPPORTED_QUERY,
@@ -154,18 +146,7 @@ class QueryService:
             )
 
     def _build_warnings(self, req:  QueryRequest) -> list[WarningMessage]:
-        """Формирует список диагностических предупреждений для пользователя на основе параметров запроса.
-    Функция анализирует входящий запрос и добавляет уведомления о специфике обработки данных. 
-    Это помогает пользователю понять, почему результат выглядит определённым образом или 
-    какие ограничения были применены при поиске.
-
-    Args:
-        req (QueryRequest): Объект запроса, содержащий тип операции и режим ввода.
-
-    Returns:
-        list[WarningMessage]: Список объектов предупреждений с кодами и описаниями. 
-            Если специфических условий не обнаружено, возвращается пустой список.
-    """
+        """Предупреждения для UI по параметрам запроса (record→сводится к обзору; name/smiles→primary = первый матч)."""
         warnings: list[WarningMessage] = []
         if req.operation == "record":
             warnings.append(
@@ -191,10 +172,10 @@ class QueryService:
         """
         # Имена синхронизированы с реальными MCP tools (app/agent/mcp_tools/*).
         mapping = {
+            "cid": "search_compound_by_cid",
             "name": "search_compound_by_name",
             "smiles": "search_compound_by_smiles",
             "formula": "search_compound_by_formula",
             "inchikey": "search_compound_by_inchikey",
-            "smiles_similar": "search_by_similar_mol_pubchem",
         }
         return mapping.get(mode, "search_compound_by_name")

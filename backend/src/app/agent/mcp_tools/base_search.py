@@ -2,7 +2,7 @@ import urllib.parse
 
 import httpx
 
-from app.agent.mcp_tools.search_cid import perform_search
+from app.agent.mcp_tools.search_cid import _fetch_props, perform_search
 from app.schemas.schemas import (
     SearchByFormulaInput,
     SearchByInChIKeyArgs,
@@ -45,5 +45,19 @@ async def search_compound_by_inchikey(inchikey: str, limit: int = 5) -> dict:
         encoded_inchikey = urllib.parse.quote(args.inchikey)
         url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{encoded_inchikey}/cids/JSON"
         return await perform_search(client, url, args.inchikey, args.limit)
+
+
+async def search_compound_by_cid(cid: int, limit: int = 5) -> dict:
+    """Прямая выборка вещества по известному PubChem CID (без поиска кандидатов).
+
+    Нужно для типизированного режима `cid` в /api/query и для случаев, когда
+    агенту уже известен CID. Возвращает тот же формат, что и search-инструменты
+    ({ok, matches, count}); если CID не найден — ok=False.
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        props = await _fetch_props(int(cid), client)
+    if props.get("molecular_formula") is None:
+        return {"ok": False, "message": f"CID {cid} не найден в PubChem.", "matches": []}
+    return {"ok": True, "query": str(cid), "matches": [props], "count": 1}
     
 
