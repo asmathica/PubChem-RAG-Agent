@@ -104,6 +104,8 @@ test_*.py
 *.svg
 !assets/*.png
 !docs/*.png
+# логотип/ассеты Chainlit UI должны быть в репо (иначе на свежем клоне дефолтный логотип)
+!backend/public/*.png
 
 # ========== other ==========
 *.pkl
