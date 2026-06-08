@@ -84,10 +84,12 @@ test_*.py
 !.env.example
 
 # ========== doc ==========
-docs/
 *.md
 !README.md
 !README.*.md
+# docs/ — knowledge files проекта, должны быть видны на GitHub
+!docs/
+!docs/**
 
 # ========== req ==========
 *.txt
