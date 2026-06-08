@@ -185,17 +185,10 @@ class QueryService:
     
 
     def _map_input_to_tool(self, mode: InputMode) -> str:
-        """Определяет целевой инструмент (tool) MCP-сервера на основе режима ввода пользователя.
-    Функция сопоставляет абстрактный режим ввода (название, формула, SMILES) с конкретным 
-    именем функции, которую должен вызвать агент для получения данных из PubChem.
+        """Сопоставляет режим ввода с именем MCP-инструмента PubChem.
 
-    Args:
-        mode (InputMode): Режим ввода данных (например, "name", "smiles", "formula").
-
-    Returns:
-        str: Название соответствующего инструмента (функции) для MCP-клиента. 
-            По умолчанию возвращает "search_by_name_pubchem", если режим не распознан.
-    """
+        Если режим не распознан — fallback на `search_compound_by_name`.
+        """
         # Имена синхронизированы с реальными MCP tools (app/agent/mcp_tools/*).
         mapping = {
             "name": "search_compound_by_name",

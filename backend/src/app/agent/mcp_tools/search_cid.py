@@ -1,21 +1,25 @@
-import httpx
 import asyncio
-global_sem = asyncio.Semaphore()
 
+import httpx
+
+# Один HTTP-запрос к PubChem за раз: бережём free-tier rate-limit PUG REST.
+global_sem = asyncio.Semaphore(1)
+
+# Поля, которые запрашиваем у PubChem property-endpoint. Имена SMILES обновлены
+# под актуальное PUG REST (2026): canonical SMILES теперь приходит в поле
+# `SMILES`, а connectivity — в `ConnectivitySMILES` (старые `CanonicalSMILES`/
+# `IsomericSMILES` больше не возвращаются). Список синхронизирован с тем, что
+# реально парсится ниже в _fetch_props.
 _PROPERTY_FIELDS = (
     "Title",
     "MolecularFormula",
     "MolecularWeight",
     "IUPACName",
-    "CanonicalSMILES",
-    "IsomericSMILES",
+    "SMILES",
+    "ConnectivitySMILES",
     "InChIKey",
     "ExactMass",
     "XLogP",
-    "TPSA",
-    "Complexity",
-    "HBondDonorCount",
-    "HBondAcceptorCount",
     "Charge",
 )
 
@@ -52,31 +56,29 @@ async def _fetch_props(cid: int, client: httpx.AsyncClient) -> dict:
             props = data["PropertyTable"]["Properties"][0]
             return {
                 "cid": cid,
-
                 "title": props.get("Title"),
                 "molecular_formula": props.get("MolecularFormula"),
                 "molecular_weight": _coerce_float(props.get("MolecularWeight")),
                 "iupac_name": props.get("IUPACName"),
-                "canonical_smiles": props.get("CanonicalSMILES"),
-                "isomeric_smiles": props.get("IsomericSMILES"),
+                "canonical_smiles": props.get("SMILES"),
+                "isomeric_smiles": props.get("ConnectivitySMILES"),
                 "inchi_key": props.get("InChIKey"),
                 "exact_mass": _coerce_float(props.get("ExactMass")),
                 "xlogp": _coerce_float(props.get("XLogP")),
-              # "tpsa": _coerce_float(props.get("TPSA")),
-               # "complexity": _coerce_float(props.get("Complexity")),
-                #"hbond_donor_count": _coerce_int(props.get("HBondDonorCount")),
-                #"hbond_acceptor_count": _coerce_int(props.get("HBondAcceptorCount")),
                 "charge": _coerce_int(props.get("Charge")),
             }
     except Exception:
         pass
 
+    # Сетевая ошибка/таймаут по конкретному CID — отдаём минимум, чтобы агент
+    # мог продолжить. Ключи в snake_case, как в успешной ветке (раньше тут был
+    # CamelCase "XLogP": 0, которого потребители карточки не находили).
     return {
         "cid": cid,
-        "XLogP": 0,
         "title": f"CID {cid}",
         "molecular_formula": None,
         "molecular_weight": None,
+        "xlogp": None,
     }
 
 

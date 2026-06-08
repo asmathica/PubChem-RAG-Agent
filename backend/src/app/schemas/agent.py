@@ -1,19 +1,11 @@
 """
-MODULE: PubChem Agent Schemas & Execution Logic
----------------------------------------------
-PURPOSE:
-Defines the data architecture and message exchange protocols for the AI agent
+Схемы агента: контракт данных между UI/HTTP, ядром агента и MCP-сервером.
 
-This file contains Pydantic models for validating incoming requests, structuring neural network responses, and tracing tool invocations.
-
-MAIN COMPONENTS:
-- AgentRequest: Validates incoming text and provider parameters.
-- ParsedAgentQuery: Schema for understanding user intent (name, SMILES, formula).
-- AgentFinalStructuredResponse: Strict LLM output format (response, rationale, CIDs).
-- AgentNormalizedPayload: Assembles final data (search results + analytics).
-- Agent_ (Class): Internal logic for invoking tools via the MCP client and maintaining a history of steps (trace).
-
-This file provides typing and a "contract" between the frontend, agent, and MCP server.
+Pydantic-модели для валидации входящего запроса (`AgentRequest`), описания
+разобранного запроса (`ParsedAgentQuery`), строгого формата ответа LLM
+(`AgentFinalStructuredResponse`) и нормализованного payload'а для фронтенда
+(`AgentNormalizedPayload` внутри `AgentResponseEnvelope`). Финальный envelope
+собирается из сырого state LangGraph в `app.services.envelope_builder`.
 """
 from typing import Any, Literal
 
@@ -22,8 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.schemas.common import CompoundMatchCard, CompoundOverview, ErrorPayload, PresentationHints, WarningMessage
 from app.schemas.query import QueryRequest
 
-
-import json
 LLMProviderName = Literal["openai", "modal_glm", "ollama", "gemini", "openrouter", "nvidia", "mistral"]
 
 
@@ -53,7 +43,6 @@ class ParsedAgentQuery(BaseModel):
 
     intent: str = Field(description="Short description of what the user is trying to do.")
     language: str | None = Field(default=None, description="Language the user appears to be using.")
-#новый тип 
     query: QueryRequest | None = Field(
         default=None, 
         description="The structured search query to be executed."
@@ -117,7 +106,6 @@ class AgentNormalizedPayload(BaseModel):
 
 class AgentResponseEnvelope(BaseModel):
     trace_id: str
-   # source: Literal["langchain-agent"] = "langchain-agent"
     status: Literal["success", "error"] = "success"
     raw: dict[str, Any] | None = None
     normalized: AgentNormalizedPayload | None = None
@@ -130,48 +118,3 @@ class AgentResponseEnvelope(BaseModel):
     )
     warnings: list[WarningMessage] = Field(default_factory=list)
     error: ErrorPayload | None = None
-
-    class Agent_:
-
-        """
-            This agent doesn't implement the tools itself - it calls the existing
-            MCP server tools (search_by_name_pubchem, search_by_smiles_pubchem, etc.)
-        """
-
-        def __init__(self, mcp_client, llm_provider: str = "openai", model: str = "gpt-4o-mini"):
-            self.mcp_client = mcp_client
-            self.llm_provider = llm_provider
-            self.model = model
-            self.tool_trace: list[AgentToolTraceEntry] = []
-            self.current_step = 0
-            
-        def _add_trace(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any] | None = None, error: str | None = None):
-
-            """Add entry to tool trace"""
-
-            self.current_step += 1
-            self.tool_trace.append(AgentToolTraceEntry(
-            step=self.current_step,
-            tool_name = tool_name,
-            arguments = arguments,
-            result = result,
-            error_message = error
-        ))
-            
-#вызов тулов
-        async def _call_mcp_tool(self, tool_name: str, **kwargs) -> dict[str, Any]:
-            """
-            Call an MCP tool and parse its JSON response.
-        
-            Args:
-                tool_name: Name of the MCP tool (e.g., "search_by_name_pubchem")
-                **kwargs: Arguments for the tool
-            
-            Returns:
-            Parsed JSON response as dict
-        """
-            result = await self.mcp_client.call_tool(tool_name, kwargs)
-        
-            if isinstance(result, str):
-                return json.loads(result)
-            return result

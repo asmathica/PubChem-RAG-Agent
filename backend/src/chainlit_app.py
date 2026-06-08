@@ -1,3 +1,14 @@
+"""
+Chainlit UI — вторая точка входа в систему (первая — FastAPI в app/main.py).
+
+Оба входа сходятся в ОДНОМ ядре: строят `AgentRequest` и зовут
+`AgentService.execute(...)`. Здесь — только то, что специфично для UI:
+аутентификация, lifecycle чата (start/resume/end/message), per-session
+DI-контейнер в `cl.user_session`, рендер ответа карточками CompoundCardV2 и
+боковой панелью. Бизнес-логика поиска НЕ дублируется — она в сервисном слое.
+
+Подробно архитектура и поток «запрос → ответ» описаны в docs/architecture.md.
+"""
 from __future__ import annotations
 
 from typing import cast

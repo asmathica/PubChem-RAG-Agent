@@ -6,7 +6,8 @@ PubChem search tools used by the chemistry agent.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import  Literal
+
+
 def clean_string(value: str) -> str:
     return value.strip()
 
@@ -102,31 +103,6 @@ class SearchByFormulaInput(BaseModel):
         return clean_query("Formula", value)
 
 
-class SearchByMassRangeArgs(BaseModel):
-    """
-    This schema validates mass range queries, allowing users to find compounds
-    with molecular weights or exact masses within a specified interval.
-    
-    Use cases:
-        - Find all compounds with molecular weight between 100-200 g/mol
-        - Search for compounds with exact mass close to a target value
-        - Filter compounds by monoisotopic mass for mass spectrometry analysis
-    
-    Validation rules:
-        - min_mass must be >= 0
-        - max_mass must be >= min_mass
-        - limit must be between 1 and 10
-        - mass_type must be one of: "molecular_weight", "exact_mass", "monoisotopic_mass"
-    """
-    min_mass: float = Field(description="Lower bound of the mass range.")
-    max_mass: float = Field(description="Upper bound of the mass range.")
-    mass_type: Literal["molecular_weight", "exact_mass", "monoisotopic_mass"] = Field(
-        default="molecular_weight",
-        description="Which PubChem mass field to search by.",
-    )
-    limit: int = Field(default=5, ge=1, le=10, description="Maximum number of candidate compounds to return.")
-
-
 class SearchByInChIKeyArgs(BaseModel):
     """
     This schema validates InChIKey strings for compound search.
@@ -148,32 +124,3 @@ class SearchByInChIKeyArgs(BaseModel):
     def strip_inchikey(cls, value: str) -> str:
 
         return clean_query("InChIKey", value)
-
-
-###############################
-##########################
-##new############
-class CompoundSummaryArgs(BaseModel):
-    cid: int = Field(gt=0, description="PubChem compound CID.")
-
-
-class NameToSmilesArgs(BaseModel):
-    name: str = Field(min_length=1, max_length=160, description="Compound name to resolve to canonical SMILES.")
-
-    @field_validator("name")
-    @classmethod
-    def strip_name(cls, value: str) -> str:
-        return clean_query("Name", value)
-
-class SearchBySynonymArgs(BaseModel):
-    synonym: str = Field(min_length=1, max_length=160, description="Alternative name or synonym for the compound.")
-    limit: int = Field(default=5, ge=1, le=10, description="Maximum number of candidate compounds to return.")
-
-    @field_validator("synonym")
-    @classmethod
-    def strip_synonym(cls, value: str) -> str:
-
-        return clean_query("Synonum", value)
-
-
-    
