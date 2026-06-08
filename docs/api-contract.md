@@ -6,23 +6,21 @@
 
 ## `POST /api/query`
 
-Принимает `ManualQuerySpec`.
+Типизированный поиск без LLM. Принимает `QueryRequest`; `input_mode` маппится на MCP-инструмент (`QueryService`).
 
 ### Пример запроса
 
 ```json
 {
-  "domain": "compound",
   "input_mode": "name",
   "identifier": "aspirin",
   "operation": "property",
-  "properties": [],
-  "filters": {},
-  "pagination": null,
-  "output": "json",
-  "include_raw": true
+  "limit": 5,
+  "include_raw": false
 }
 ```
+
+Поля: `input_mode` (обяз.), `identifier` (обяз.), `operation` (по умолч. `property`), `limit` (1–50, по умолч. 10), `include_raw` (по умолч. `false`). Поля `domain`/`properties`/`filters`/`pagination`/`output` в запросе **не существуют**.
 
 ### Поддерживаемые режимы ввода backend
 
@@ -78,7 +76,29 @@
 
 `recommended_candidate_index` нужен только для выбора кандидата по умолчанию. В интерфейсе он не показывается как “рекомендация”, а используется как техническое поле.
 
-## Коды ошибок
+## `POST /api/agent`
+
+Агентный поиск: natural-language → LLM сам выбирает MCP-инструменты PubChem → ответ.
+
+### Запрос — `AgentRequest`
+
+```json
+{ "text": "what is aspirin?", "provider": null, "include_raw": true }
+```
+
+- `text` (обяз.) — запрос на естественном языке.
+- `provider` — необязательный override LLM-провайдера (`mistral`/`gemini`/`openrouter`/`nvidia`/`openai`/`ollama`); по умолчанию primary из настроек.
+- Заголовок `X-Session-Id` (необяз.) — стабильный id диалога для памяти агента (LangGraph `thread_id`).
+
+### Ответ — `AgentResponseEnvelope`
+
+`trace_id`, `status`, `raw`, `presentation_hints` (табы `answer/compounds/analysis/tools/json`), `warnings`, `error` и `normalized`:
+
+- `final_answer`, `explanation[]`, `parsed_query`
+- `needs_clarification`, `clarification_question`
+- `matches[]`, `compounds[]`, `tool_trace[]`, `referenced_cids[]`
+
+## Коды ошибок (enum `ErrorCode`)
 
 - `VALIDATION_ERROR`
 - `NO_MATCH`
@@ -89,6 +109,9 @@
 - `UPSTREAM_UNAVAILABLE`
 - `UNSUPPORTED_QUERY`
 - `INTERPRETATION_LOW_CONFIDENCE`
+- `LLM_NOT_CONFIGURED`
+- `TOOL_LOOP_ABORTED`
+- `INTERNAL_ERROR`
 
 ## Следующий слой API
 
