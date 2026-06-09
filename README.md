@@ -1,18 +1,81 @@
-# PubChem RAG Agent
+<div align="center">
+<img align="center" src=frontend/public/icon.svg width="25%"/>
+</div>
 
-PubChem agent для поиска соединений по естественному языку и точным химическим идентификаторам. Текущая рабочая связка строится так:
+<p align="center">
+  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&size=40&pause=1000&color=3e5c5e&center=true&vCenter=true&width=1000&lines=PubChem+AI+Assistant;LLM+Powered+Chemistry+Agent" />
+</p>
 
-- `LangChain` для agent runtime и tool calling
-- `Chainlit` для нового UI со streaming, steps и карточкой вещества
-- `FastAPI` для отдельных API endpoints
-- `Langfuse` для tracing
+<p align="center">
 
-## Что сейчас является основным
+<img src="https://img.shields.io/badge/UI-Chainlit-00C6FF?style=for-the-badge"/>
+<img src="https://img.shields.io/badge/Agent-LangChain-8E2DE2?style=for-the-badge"/>
+<img src="https://img.shields.io/badge/API-FastAPI-0072FF?style=for-the-badge"/>
+<img src="https://img.shields.io/badge/Tracing-Langfuse-FF4ECD?style=for-the-badge"/>
 
-- Основной UI: `Chainlit`
-- Основной agent runtime: `backend/src/app/agent/*`
-- Основной доступ к PubChem: `PubChemTransport` + `PubChemAdapter`
-- `frontend/` на `Next.js` остаётся как legacy MVP и не считается целевым UI для новой agent-версии
+</p>
+
+## ✨ Обзор
+
+PubChem agent — ассистент поиска и сравнения свойств химических соединений, медикаментов на основании базы данных PubChem.
+
+
+
+
+---
+
+## 🧬 Архитектура
+
+<img width="1231" height="695" alt="image" src="https://github.com/user-attachments/assets/26f99545-dd2c-401b-9a2f-3c6d2516d98e" />
+
+
+## 🤖 LLM Фабрика
+
+Система использует единый **уровень фабрики LLM**, который абстрагирует несколько провайдеров моделей (облачные + локальные) в единый интерфейс среды выполнения.
+
+Этот уровень отвечает за:
+- выбор основного LLM-провайдера
+- формирование цепочки резервных вариантов среди доступных поставщиков
+- обеспечение безопасных ограничений выполнения
+- стандартизацию конфигурации среды выполнения
+---
+
+
+## ⚙️ Поддерживаемые модели
+
+PubChem Agent построен как **multi-provider LLM система**, которая позволяет гибко переключаться между облачными и локальными моделями.
+
+Это обеспечивает:
+- устойчивость к падению API
+- выбор баланса между скоростью и качеством
+- возможность полностью локального запуска
+
+---
+
+### 🤖 Доступные LLM провайдеры
+
+- 🟢 OpenAI (GPT модели)
+- 🟣 Mistral AI
+- 🔵 Google Gemini
+- 🟡 NVIDIA NIM
+- 🟠 OpenRouter (агрегация моделей)
+- 🧪 Modal GLM (экспериментальные модели)
+- 🖥 Ollama (локальные модели, полностью offline режим)
+
+---
+
+### 🔄 Как это работает
+
+Система автоматически:
+- выбирает primary модель из конфигурации
+- подключает fallback цепочку при ошибках
+- переключается между провайдерами без прерывания работы агента
+
+👉 Это позволяет агенту оставаться доступным даже при недоступности отдельных API.
+
+---
+
+
 
 ## Быстрый старт
 
@@ -57,6 +120,40 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
   - docker-compose для API, Chainlit UI и Redis
 - `docs/`
   - knowledge files по архитектуре и промежуточным решениям
+
+## 🚀 Дальнейшие пути расширения
+
+PubChem Agent изначально спроектирован как расширяемая инструментальная система. Архитектура (LLM + MCP + нормализация + агентный runtime) позволяет постепенно добавлять новые источники данных и расширять возможности без изменения ядра агента.
+
+### 🧪 Добавление новых внешних инструментов
+- 🔬 ChEMBL — биоактивные молекулы и drug discovery данные  
+- 🧬 DrugBank — информация о лекарствах и их мишенях  
+- 🧪 AlphaFold DB (структуры белков)
+- 🧪 UniChem — унификация идентификаторов между базами  
+- 🌍 Wikidata / Wikipedia (общие справочные данные)  
+
+
+
+### 🔍 Создание модулей генерации и моделирования
+- 🧠 Предсказание свойств молекул (QSAR модели)
+- ⚗️ Динамическое моделирование химических реакций
+- 🧬 Генерация SMILES / InChI из описания
+- 📉 Кластеризация и similarity search
+
+
+
+### 🤖 Архитектурные улучшения
+- 🧭 multi-step reasoning (планирование цепочек действий)
+- 📚 retrieval по научным статьям (RAG поверх PubMed / Semantic Scholar)
+- 🧠 memory layer для хранения пользовательских сессий
+- 🧩 multi-agent режим (разные агенты под разные задачи)
+
+
+### 🖥 UI и продуктовые расширения
+- 📈 графы связей между веществами
+- 💾 история запросов и исследований
+- 🧑‍🔬 режим “лаборатории” (workflow builder)
+
 
 ## Документация
 
